@@ -6,15 +6,40 @@ risk limits, or scan timing.
 """
 
 # ==============================
+# ==============================
 # SYMBOL PAIRS
 # ==============================
 PAIRS = [
+    # Existing
     ("EURUSD", "GBPUSD"),
     ("XAUUSD", "XAGUSD"),
     ("AUDUSD", "NZDUSD"),
     ("EURUSD", "USDCHF"),
     ("GBPUSD", "EURGBP"),
+    # Additional EUR / GBP
+    ("EURJPY", "GBPJPY"),
+    ("EURAUD", "EURNZD"),
+    # Additional Australian / New Zealand
+    ("AUDJPY", "NZDJPY"),
+    ("AUDCAD", "NZDCAD"),
+    ("AUDCHF", "NZDCHF"),
 ]
+
+# ==============================
+# PAIR EXECUTION MODES
+# ==============================
+PAIR_EXECUTION_MODES = {
+    ("EURUSD", "GBPUSD"): "HEDGED",
+    ("XAUUSD", "XAGUSD"): "SAME_DIRECTION",
+    ("AUDUSD", "NZDUSD"): "HEDGED",
+    ("EURUSD", "USDCHF"): "HEDGED",
+    ("GBPUSD", "EURGBP"): "HEDGED",
+    ("EURJPY", "GBPJPY"): "HEDGED",
+    ("EURAUD", "EURNZD"): "HEDGED",
+    ("AUDJPY", "NZDJPY"): "HEDGED",
+    ("AUDCAD", "NZDCAD"): "HEDGED",
+    ("AUDCHF", "NZDCHF"): "HEDGED",
+}
 
 # ==============================
 # STRATEGY SETTINGS

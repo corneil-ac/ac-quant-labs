@@ -13,6 +13,7 @@ class TradeManager:
         exit_z: float,
         entry_comment: str,
         exit_comment: str,
+        execution_modes: dict,
         close_first_leg_if_second_fails: bool = True,
     ):
         self.logger = logger
@@ -24,6 +25,7 @@ class TradeManager:
         self.exit_z = exit_z
         self.entry_comment = entry_comment
         self.exit_comment = exit_comment
+        self.execution_modes = execution_modes
         self.close_first_leg_if_second_fails = close_first_leg_if_second_fails
 
     def manage_existing_pair(self, symbol1: str, symbol2: str, z: float) -> bool:
@@ -48,7 +50,9 @@ class TradeManager:
             self.close_pair(symbol1, symbol2)
             return True
 
-        self.logger.info(f"{symbol1}/{symbol2} OPEN | legs=2 | z={z:.2f} | profit={profit:.2f}")
+        self.logger.info(
+            f"{symbol1}/{symbol2} OPEN | legs=2 | z={z:.2f} | profit={profit:.2f}"
+        )
 
         should_close = False
         reason = ""
@@ -88,35 +92,63 @@ class TradeManager:
             self.logger.info(f"{symbol1}/{symbol2}: skipped -> {reason}")
             return
 
+        mode = self.execution_modes.get((symbol1, symbol2), "HEDGED")
+
         if signal.action == "LONG":
-            self.logger.info(f"{symbol1}/{symbol2}: ENTRY LONG | z={signal.z:.2f} | beta={signal.beta:.4f}")
-            first = self.broker.buy(symbol1, self.lot_size, comment=self.entry_comment)
-            if not first.ok:
-                return
-
-            second = self.broker.sell(symbol2, self.lot_size, comment=self.entry_comment)
-
-            if not second.ok and self.close_first_leg_if_second_fails:
-                self.logger.error(f"{symbol1}/{symbol2}: second leg failed; closing first leg immediately")
-                self._close_newest_position_for_symbol(symbol1)
-
-            if first.ok and second.ok:
-                self.risk.mark_trade_time(symbol1, symbol2)
+            first_action = "BUY"
+            second_action = "BUY" if mode == "SAME_DIRECTION" else "SELL"
 
         elif signal.action == "SHORT":
-            self.logger.info(f"{symbol1}/{symbol2}: ENTRY SHORT | z={signal.z:.2f} | beta={signal.beta:.4f}")
-            first = self.broker.sell(symbol1, self.lot_size, comment=self.entry_comment)
-            if not first.ok:
-                return
+            first_action = "SELL"
+            second_action = "SELL" if mode == "SAME_DIRECTION" else "BUY"
 
-            second = self.broker.buy(symbol2, self.lot_size, comment=self.entry_comment)
+        else:
+            return
 
-            if not second.ok and self.close_first_leg_if_second_fails:
-                self.logger.error(f"{symbol1}/{symbol2}: second leg failed; closing first leg immediately")
-                self._close_newest_position_for_symbol(symbol1)
+        self.logger.info(
+            f"{symbol1}/{symbol2}: ENTRY {signal.action} | "
+            f"mode={mode} | z={signal.z:.2f} | beta={signal.beta:.4f}"
+        )
 
-            if first.ok and second.ok:
-                self.risk.mark_trade_time(symbol1, symbol2)
+        if first_action == "BUY":
+            first = self.broker.buy(
+                symbol1,
+                self.lot_size,
+                comment=self.entry_comment,
+            )
+        else:
+            first = self.broker.sell(
+                symbol1,
+                self.lot_size,
+                comment=self.entry_comment,
+            )
+
+        if not first.ok:
+            return
+
+        if second_action == "BUY":
+            second = self.broker.buy(
+                symbol2,
+                self.lot_size,
+                comment=self.entry_comment,
+            )
+        else:
+            second = self.broker.sell(
+                symbol2,
+                self.lot_size,
+                comment=self.entry_comment,
+            )
+
+        if not second.ok and self.close_first_leg_if_second_fails:
+            self.logger.error(
+                f"{symbol1}/{symbol2}: second leg failed; "
+                "closing first leg immediately"
+            )
+            self._close_newest_position_for_symbol(symbol1)
+            return
+
+        if first.ok and second.ok:
+            self.risk.mark_trade_time(symbol1, symbol2)
 
     def _close_newest_position_for_symbol(self, symbol: str) -> None:
         positions = [p for p in self.broker.positions() if p.symbol == symbol]

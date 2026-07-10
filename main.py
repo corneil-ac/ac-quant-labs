@@ -12,7 +12,6 @@ from risk_manager import RiskManager
 from trade_manager import TradeManager
 from dashboard import show_dashboard
 
-
 TIMEFRAMES = {
     "M1": mt5.TIMEFRAME_M1,
     "M5": mt5.TIMEFRAME_M5,
@@ -76,6 +75,7 @@ def main():
         exit_z=config.EXIT_Z,
         entry_comment=config.ORDER_COMMENT_ENTRY,
         exit_comment=config.ORDER_COMMENT_EXIT,
+        execution_modes=config.PAIR_EXECUTION_MODES,
         close_first_leg_if_second_fails=config.CLOSE_FIRST_LEG_IF_SECOND_FAILS,
     )
 
@@ -91,28 +91,34 @@ def main():
 
                 if signal is None:
                     logger.info(f"{symbol1}/{symbol2}: not enough data")
-                    snapshots.append({
-                        "pair": f"{symbol1}/{symbol2}",
-                        "z": "N/A",
-                        "signal": "NONE",
-                        "open": 0,
-                        "profit": "0.00",
-                    })
+                    snapshots.append(
+                        {
+                            "pair": f"{symbol1}/{symbol2}",
+                            "z": "N/A",
+                            "signal": "NONE",
+                            "open": 0,
+                            "profit": "0.00",
+                        }
+                    )
                     continue
 
                 open_positions = broker.pair_positions(symbol1, symbol2)
                 profit = broker.pair_profit(symbol1, symbol2)
 
-                snapshots.append({
-                    "pair": f"{symbol1}/{symbol2}",
-                    "z": f"{signal.z:.2f}",
-                    "signal": signal.action,
-                    "open": len(open_positions),
-                    "profit": f"{profit:.2f}",
-                })
+                snapshots.append(
+                    {
+                        "pair": f"{symbol1}/{symbol2}",
+                        "z": f"{signal.z:.2f}",
+                        "signal": signal.action,
+                        "open": len(open_positions),
+                        "profit": f"{profit:.2f}",
+                    }
+                )
 
                 # EXIT/MANAGEMENT FIRST. This fixes the V1 bug.
-                had_open_pair = trade_manager.manage_existing_pair(symbol1, symbol2, signal.z)
+                had_open_pair = trade_manager.manage_existing_pair(
+                    symbol1, symbol2, signal.z
+                )
                 if had_open_pair:
                     continue
 

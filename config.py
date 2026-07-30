@@ -1,25 +1,21 @@
 """
-Pair Trading Bot V2 configuration.
+BULLET configuration.
 
-Edit this file only when you want to change pairs, lot size, entry/exit rules,
-risk limits, or scan timing.
+Edit this file to change pairs, thresholds, risk limits, calendar behavior,
+or scan timing.
 """
 
-# ==============================
 # ==============================
 # SYMBOL PAIRS
 # ==============================
 PAIRS = [
-    # Existing
     ("EURUSD", "GBPUSD"),
     ("XAUUSD", "XAGUSD"),
     ("AUDUSD", "NZDUSD"),
     ("EURUSD", "USDCHF"),
     ("GBPUSD", "EURGBP"),
-    # Additional EUR / GBP
     ("EURJPY", "GBPJPY"),
     ("EURAUD", "EURNZD"),
-    # Additional Australian / New Zealand
     ("AUDJPY", "NZDJPY"),
     ("AUDCAD", "NZDCAD"),
     ("AUDCHF", "NZDCHF"),
@@ -45,16 +41,42 @@ PAIR_EXECUTION_MODES = {
 # STRATEGY SETTINGS
 # ==============================
 LOT_SIZE = 0.01
-
 WINDOW_BETA = 200
 WINDOW_Z = 80
 HISTORY_BARS = 600
 
+# Global fallbacks. Active pairs should use PAIR_PROFILES below.
 ENTRY_Z = 1.30
 EXIT_Z = 0.20
 
-# Scan every 60 seconds. Since strategy uses M5 candles, 60 seconds is OK for testing.
+PAIR_PROFILES = {
+    ("EURUSD", "GBPUSD"): {"name": "EURGBP_CORE", "entry_z": 1.40, "exit_z": 0.15, "news_filter": True},
+    ("XAUUSD", "XAGUSD"): {"name": "METALS_CORE", "entry_z": 1.80, "exit_z": 0.20, "news_filter": True},
+    ("AUDUSD", "NZDUSD"): {"name": "AUDNZD_CORE", "entry_z": 1.50, "exit_z": 0.15, "news_filter": True},
+    ("EURUSD", "USDCHF"): {"name": "EURCHF_USD", "entry_z": 1.80, "exit_z": 0.10, "news_filter": True},
+    ("GBPUSD", "EURGBP"): {"name": "GBP_EUR_CROSS", "entry_z": 1.60, "exit_z": 0.15, "news_filter": True},
+    ("EURJPY", "GBPJPY"): {"name": "EURGBP_JPY", "entry_z": 1.40, "exit_z": 0.15, "news_filter": True},
+    ("EURAUD", "EURNZD"): {"name": "EUR_AUDNZD", "entry_z": 1.50, "exit_z": 0.15, "news_filter": True},
+    ("AUDJPY", "NZDJPY"): {"name": "AUDNZD_JPY", "entry_z": 1.50, "exit_z": 0.15, "news_filter": True},
+    ("AUDCAD", "NZDCAD"): {"name": "AUDNZD_CAD", "entry_z": 1.50, "exit_z": 0.15, "news_filter": True},
+    ("AUDCHF", "NZDCHF"): {"name": "AUDNZD_CHF", "entry_z": 1.50, "exit_z": 0.15, "news_filter": True},
+}
+
 SCAN_SECONDS = 60
+
+# ==============================
+# ECONOMIC CALENDAR
+# ==============================
+CALENDAR_ENABLED = True
+CALENDAR_SOURCE_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+CALENDAR_CACHE_PATH = "data/calendar_cache.json"
+CALENDAR_REFRESH_SECONDS = 6 * 60 * 60
+CALENDAR_MAX_CACHE_AGE_SECONDS = 12 * 60 * 60
+CALENDAR_REQUEST_TIMEOUT_SECONDS = 15
+CALENDAR_IMPACTS = {"High"}
+CALENDAR_BLACKOUT_MINUTES_BEFORE = 120
+CALENDAR_BLACKOUT_MINUTES_AFTER = 120
+CALENDAR_FAIL_CLOSED = True
 
 # ==============================
 # RISK / SAFETY SETTINGS
@@ -62,24 +84,12 @@ SCAN_SECONDS = 60
 MAX_TOTAL_PAIRS = 2
 MAX_PAIRS_PER_STRATEGY = 1
 COOLDOWN_MINUTES = 15
-
-# Profit/loss is total floating PnL for both legs of the pair.
 PROFIT_TARGET = 40.0
 STOP_LOSS = -20.0
-
-# If True, bot will print signals but will NOT place trades.
 DRY_RUN = False
-
-# Your bot's magic number. Keep this unique.
 MAGIC = 999999
-
-# MT5 timeframe as a string. main.py converts it to the MT5 constant.
 TIMEFRAME_NAME = "M5"
-
-# Order settings
 DEVIATION = 10
 ORDER_COMMENT_ENTRY = "pair_trade_v2"
 ORDER_COMMENT_EXIT = "close_pair_v2"
-
-# If leg 1 succeeds but leg 2 fails, immediately close leg 1.
 CLOSE_FIRST_LEG_IF_SECOND_FAILS = True

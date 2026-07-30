@@ -11,6 +11,8 @@ from strategy import PairStrategy
 from risk_manager import RiskManager
 from trade_manager import TradeManager
 from dashboard import show_dashboard
+from calendar_provider import CalendarProvider
+from calendar_filter import CalendarFilter
 
 TIMEFRAMES = {
     "M1": mt5.TIMEFRAME_M1,
@@ -54,8 +56,20 @@ def main():
     strategy = PairStrategy(
         window_beta=config.WINDOW_BETA,
         window_z=config.WINDOW_Z,
-        entry_z=config.ENTRY_Z,
-        exit_z=config.EXIT_Z,
+    )
+
+    calendar_provider = CalendarProvider(
+        logger=logger,
+        url=config.CALENDAR_URL,
+        cache_path=config.CALENDAR_CACHE_PATH,
+        refresh_hours=config.CALENDAR_REFRESH_HOURS,
+    )
+    calendar_provider.refresh(force=True)
+    calendar_filter = CalendarFilter(
+        provider=calendar_provider,
+        minutes_before=config.CALENDAR_BLACKOUT_MINUTES_BEFORE,
+        minutes_after=config.CALENDAR_BLACKOUT_MINUTES_AFTER,
+        blocked_impacts=config.CALENDAR_BLOCKED_IMPACTS,
     )
 
     risk_manager = RiskManager(
@@ -72,7 +86,6 @@ def main():
         lot_size=config.LOT_SIZE,
         profit_target=config.PROFIT_TARGET,
         stop_loss=config.STOP_LOSS,
-        exit_z=config.EXIT_Z,
         entry_comment=config.ORDER_COMMENT_ENTRY,
         exit_comment=config.ORDER_COMMENT_EXIT,
         execution_modes=config.PAIR_EXECUTION_MODES,
@@ -84,10 +97,12 @@ def main():
     try:
         while True:
             snapshots = []
+            calendar_provider.refresh()
 
             for symbol1, symbol2 in config.PAIRS:
+                profile = config.PAIR_PROFILES[(symbol1, symbol2)]
                 data = data_manager.get_pair_data(symbol1, symbol2)
-                signal = strategy.calculate(data, symbol1, symbol2)
+                signal = strategy.calculate(data, symbol1, symbol2, profile)
 
                 if signal is None:
                     logger.info(f"{symbol1}/{symbol2}: not enough data")
@@ -96,9 +111,12 @@ def main():
                             "pair": f"{symbol1}/{symbol2}",
                             "z": "N/A",
                             "signal": "NONE",
-                            "open": 0,
-                            "profit": "0.00",
+                            "open": len(broker.pair_positions(symbol1, symbol2)),
+                            "profit": f"{broker.pair_profit(symbol1, symbol2):.2f}",
                         }
+                    )
+                    trade_manager.manage_existing_pair(
+                        symbol1, symbol2, None, profile
                     )
                     continue
 
@@ -117,14 +135,22 @@ def main():
 
                 # EXIT/MANAGEMENT FIRST. This fixes the V1 bug.
                 had_open_pair = trade_manager.manage_existing_pair(
-                    symbol1, symbol2, signal.z
+                    symbol1, symbol2, signal.z, profile
                 )
                 if had_open_pair:
                     continue
 
                 # ENTRY SECOND.
                 if signal.action in ("LONG", "SHORT"):
-                    trade_manager.open_pair(signal)
+                    calendar_ok, calendar_reason = calendar_filter.can_open_pair(
+                        symbol1, symbol2
+                    )
+                    if calendar_ok:
+                        trade_manager.open_pair(signal)
+                    else:
+                        logger.info(
+                            f"{symbol1}/{symbol2}: entry blocked -> {calendar_reason}"
+                        )
                 else:
                     logger.info(f"{symbol1}/{symbol2}: waiting | z={signal.z:.2f}")
 

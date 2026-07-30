@@ -16,6 +16,9 @@ env/
 *.sqlite
 *.sqlite3
 
+# Runtime calendar data
+data/calendar_cache.json
+
 # OS
 .DS_Store
 Thumbs.db

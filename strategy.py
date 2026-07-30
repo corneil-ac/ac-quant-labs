@@ -12,16 +12,25 @@ class Signal:
     beta: float
     action: str  # LONG, SHORT, NONE
     reason: str
+    profile_name: str
+    threshold_used: float
 
 
 class PairStrategy:
-    def __init__(self, window_beta: int, window_z: int, entry_z: float, exit_z: float):
+    def __init__(self, window_beta: int, window_z: int):
         self.window_beta = window_beta
         self.window_z = window_z
-        self.entry_z = entry_z
-        self.exit_z = exit_z
 
-    def calculate(self, data: pd.DataFrame, symbol1: str, symbol2: str) -> Signal | None:
+    def calculate(
+        self,
+        data: pd.DataFrame,
+        symbol1: str,
+        symbol2: str,
+        profile: dict,
+    ) -> Signal | None:
+        profile_name = str(profile["name"])
+        entry_z = float(profile["entry_z"])
+
         if data.empty or len(data) < max(self.window_beta, self.window_z) + 5:
             return None
 
@@ -44,9 +53,17 @@ class PairStrategy:
         z = float(current["Z"])
         beta = float(current["BETA"])
 
-        if z > self.entry_z:
-            return Signal(symbol1, symbol2, z, beta, "SHORT", f"z {z:.2f} > entry {self.entry_z}")
-        elif z < -self.entry_z:
-            return Signal(symbol1, symbol2, z, beta, "LONG", f"z {z:.2f} < -entry {self.entry_z}")
+        if z > entry_z:
+            return Signal(
+                symbol1, symbol2, z, beta, "SHORT",
+                f"z {z:.2f} > entry {entry_z}", profile_name, entry_z,
+            )
+        elif z < -entry_z:
+            return Signal(
+                symbol1, symbol2, z, beta, "LONG",
+                f"z {z:.2f} < -entry {entry_z}", profile_name, entry_z,
+            )
 
-        return Signal(symbol1, symbol2, z, beta, "NONE", "no entry")
+        return Signal(
+            symbol1, symbol2, z, beta, "NONE", "no entry", profile_name, entry_z
+        )

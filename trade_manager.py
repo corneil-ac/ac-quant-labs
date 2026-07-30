@@ -10,7 +10,6 @@ class TradeManager:
         lot_size: float,
         profit_target: float,
         stop_loss: float,
-        exit_z: float,
         entry_comment: str,
         exit_comment: str,
         execution_modes: dict,
@@ -22,13 +21,14 @@ class TradeManager:
         self.lot_size = lot_size
         self.profit_target = profit_target
         self.stop_loss = stop_loss
-        self.exit_z = exit_z
         self.entry_comment = entry_comment
         self.exit_comment = exit_comment
         self.execution_modes = execution_modes
         self.close_first_leg_if_second_fails = close_first_leg_if_second_fails
 
-    def manage_existing_pair(self, symbol1: str, symbol2: str, z: float) -> bool:
+    def manage_existing_pair(
+        self, symbol1: str, symbol2: str, z: float | None, profile: dict
+    ) -> bool:
         """
         Returns True if the pair had open positions and was managed.
 
@@ -50,16 +50,18 @@ class TradeManager:
             self.close_pair(symbol1, symbol2)
             return True
 
+        z_display = f"{z:.2f}" if z is not None else "unavailable"
         self.logger.info(
-            f"{symbol1}/{symbol2} OPEN | legs=2 | z={z:.2f} | profit={profit:.2f}"
+            f"{symbol1}/{symbol2} OPEN | legs=2 | z={z_display} | profit={profit:.2f}"
         )
 
         should_close = False
         reason = ""
 
-        if abs(z) < self.exit_z:
+        exit_z = float(profile["exit_z"])
+        if z is not None and abs(z) < exit_z:
             should_close = True
-            reason = f"z-score exit | abs({z:.2f}) < {self.exit_z}"
+            reason = f"z-score exit | abs({z:.2f}) < {exit_z}"
         elif profit >= self.profit_target:
             should_close = True
             reason = f"profit target | {profit:.2f} >= {self.profit_target}"
@@ -107,7 +109,9 @@ class TradeManager:
 
         self.logger.info(
             f"{symbol1}/{symbol2}: ENTRY {signal.action} | "
-            f"mode={mode} | z={signal.z:.2f} | beta={signal.beta:.4f}"
+            f"mode={mode} | profile={signal.profile_name} | "
+            f"threshold={signal.threshold_used} | z={signal.z:.2f} | "
+            f"beta={signal.beta:.4f}"
         )
 
         if first_action == "BUY":

@@ -90,6 +90,7 @@ def main():
         exit_comment=config.ORDER_COMMENT_EXIT,
         execution_modes=config.PAIR_EXECUTION_MODES,
         close_first_leg_if_second_fails=config.CLOSE_FIRST_LEG_IF_SECOND_FAILS,
+        allow_volume_normalization=config.ALLOW_VOLUME_NORMALIZATION,
     )
 
     logger.info("Bot started")

@@ -46,6 +46,10 @@ PAIR_EXECUTION_MODES = {
 # ==============================
 LOT_SIZE = 0.01
 
+# Keep False to reject lot sizes that do not exactly match each symbol's MT5
+# volume contract. Set True only when automatic clamping/step rounding is desired.
+ALLOW_VOLUME_NORMALIZATION = False
+
 WINDOW_BETA = 200
 WINDOW_Z = 80
 HISTORY_BARS = 600

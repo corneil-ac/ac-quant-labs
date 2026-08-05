@@ -14,6 +14,7 @@ class TradeManager:
         exit_comment: str,
         execution_modes: dict,
         close_first_leg_if_second_fails: bool = True,
+        allow_volume_normalization: bool = False,
     ):
         self.logger = logger
         self.broker = broker
@@ -25,6 +26,8 @@ class TradeManager:
         self.exit_comment = exit_comment
         self.execution_modes = execution_modes
         self.close_first_leg_if_second_fails = close_first_leg_if_second_fails
+        self.allow_volume_normalization = allow_volume_normalization
+        self._configuration_failures: set[tuple[str, str]] = set()
 
     def manage_existing_pair(
         self, symbol1: str, symbol2: str, z: float | None, profile: dict
@@ -89,6 +92,10 @@ class TradeManager:
         symbol1 = signal.symbol1
         symbol2 = signal.symbol2
 
+        pair = (symbol1, symbol2)
+        if pair in self._configuration_failures:
+            return
+
         can_open, reason = self.risk.can_open_pair(symbol1, symbol2)
         if not can_open:
             self.logger.info(f"{symbol1}/{symbol2}: skipped -> {reason}")
@@ -107,6 +114,39 @@ class TradeManager:
         else:
             return
 
+        # Preflight both legs before either order is submitted. Volume contract
+        # failures are deterministic configuration errors, so quarantine the pair
+        # rather than retrying it on every scan.
+        first_volume = self.broker.validate_volume(
+            symbol1, self.lot_size, self.allow_volume_normalization
+        )
+        second_volume = self.broker.validate_volume(
+            symbol2, self.lot_size, self.allow_volume_normalization
+        )
+        for validation in (first_volume, second_volume):
+            self.logger.info(
+                f"{validation.symbol}: volume preflight | "
+                f"requested={validation.requested} | normalized={validation.normalized} | "
+                f"min={validation.volume_min} | max={validation.volume_max} | "
+                f"step={validation.volume_step} | valid={validation.ok}"
+            )
+
+        if not first_volume.ok or not second_volume.ok:
+            failures = "; ".join(
+                f"{v.symbol}: {v.reason}" for v in (first_volume, second_volume) if not v.ok
+            )
+            deterministic = any(
+                not validation.ok and validation.deterministic
+                for validation in (first_volume, second_volume)
+            )
+            if deterministic:
+                self._configuration_failures.add(pair)
+            self.logger.error(
+                f"{symbol1}/{symbol2}: pair entry rejected before order submission; "
+                f"future retries {'disabled' if deterministic else 'allowed'} -> {failures}"
+            )
+            return
+
         self.logger.info(
             f"{symbol1}/{symbol2}: ENTRY {signal.action} | "
             f"mode={mode} | profile={signal.profile_name} | "
@@ -117,13 +157,13 @@ class TradeManager:
         if first_action == "BUY":
             first = self.broker.buy(
                 symbol1,
-                self.lot_size,
+                first_volume.normalized,
                 comment=self.entry_comment,
             )
         else:
             first = self.broker.sell(
                 symbol1,
-                self.lot_size,
+                first_volume.normalized,
                 comment=self.entry_comment,
             )
 
@@ -133,13 +173,13 @@ class TradeManager:
         if second_action == "BUY":
             second = self.broker.buy(
                 symbol2,
-                self.lot_size,
+                second_volume.normalized,
                 comment=self.entry_comment,
             )
         else:
             second = self.broker.sell(
                 symbol2,
-                self.lot_size,
+                second_volume.normalized,
                 comment=self.entry_comment,
             )
 

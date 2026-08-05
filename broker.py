@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+import math
 from typing import Optional, Iterable
 import MetaTrader5 as mt5
 
@@ -14,6 +16,19 @@ class OrderResult:
     retcode: Optional[int]
     comment: str
     price: Optional[float]
+
+
+@dataclass(frozen=True)
+class VolumeValidation:
+    ok: bool
+    symbol: str
+    requested: float
+    normalized: Optional[float]
+    volume_min: Optional[float]
+    volume_max: Optional[float]
+    volume_step: Optional[float]
+    reason: str = ""
+    deterministic: bool = True
 
 
 class Broker:
@@ -58,6 +73,64 @@ class Broker:
                 self.logger.info(
                     f"{symbol}: selected | visible={info.visible} | filling_mode={info.filling_mode} | trade_mode={info.trade_mode}"
                 )
+
+    def validate_volume(
+        self, symbol: str, requested: float, allow_normalization: bool = False
+    ) -> VolumeValidation:
+        """Validate a requested volume against the symbol's live MT5 contract."""
+        selected = mt5.symbol_select(symbol, True)
+        info = mt5.symbol_info(symbol)
+        if not selected or info is None:
+            return VolumeValidation(
+                False, symbol, requested, None, None, None, None,
+                "symbol is unavailable or could not be selected",
+                False,
+            )
+
+        volume_min = getattr(info, "volume_min", None)
+        volume_max = getattr(info, "volume_max", None)
+        volume_step = getattr(info, "volume_step", None)
+        try:
+            requested_decimal = Decimal(str(requested))
+            minimum = Decimal(str(volume_min))
+            maximum = Decimal(str(volume_max))
+            step = Decimal(str(volume_step))
+        except (InvalidOperation, TypeError, ValueError):
+            return VolumeValidation(
+                False, symbol, requested, None, volume_min, volume_max, volume_step,
+                "invalid MT5 volume contract",
+            )
+
+        if (
+            not math.isfinite(float(requested_decimal))
+            or requested_decimal <= 0
+            or minimum <= 0
+            or maximum < minimum
+            or step <= 0
+        ):
+            return VolumeValidation(
+                False, symbol, requested, None, volume_min, volume_max, volume_step,
+                "invalid requested volume or MT5 volume contract",
+            )
+
+        clamped = min(max(requested_decimal, minimum), maximum)
+        steps = ((clamped - minimum) / step).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP
+        )
+        normalized_decimal = min(max(minimum + steps * step, minimum), maximum)
+        normalized = float(normalized_decimal)
+        valid_as_requested = requested_decimal == normalized_decimal
+
+        if not valid_as_requested and not allow_normalization:
+            return VolumeValidation(
+                False, symbol, requested, normalized, float(minimum), float(maximum),
+                float(step), "requested volume is outside the MT5 volume contract",
+            )
+
+        return VolumeValidation(
+            True, symbol, requested, normalized, float(minimum), float(maximum),
+            float(step), "normalized" if not valid_as_requested else "",
+        )
 
     def account_info(self):
         return mt5.account_info()

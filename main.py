@@ -91,6 +91,12 @@ def main():
         execution_modes=config.PAIR_EXECUTION_MODES,
         close_first_leg_if_second_fails=config.CLOSE_FIRST_LEG_IF_SECOND_FAILS,
         allow_volume_normalization=config.ALLOW_VOLUME_NORMALIZATION,
+        enable_time_exit=config.ENABLE_TIME_EXIT,
+        time_exit_hours=config.TIME_EXIT_HOURS,
+        time_exit_min_profit=config.TIME_EXIT_MIN_PROFIT,
+        enable_max_hold=config.ENABLE_MAX_HOLD,
+        max_hold_hours=config.MAX_HOLD_HOURS,
+        min_hold_minutes=config.MIN_HOLD_MINUTES,
     )
 
     logger.info("Bot started")

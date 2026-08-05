@@ -77,6 +77,15 @@ COOLDOWN_MINUTES = 15
 PROFIT_TARGET = 40.0
 STOP_LOSS = -20.0
 
+# Adaptive exit management. Time exit captures profitable stale trades only
+# after the minimum holding grace period. Maximum hold is a hard close.
+ENABLE_TIME_EXIT = False
+TIME_EXIT_HOURS = 6.0
+TIME_EXIT_MIN_PROFIT = 5.0
+ENABLE_MAX_HOLD = False
+MAX_HOLD_HOURS = 24.0
+MIN_HOLD_MINUTES = 30.0
+
 # If True, bot will print signals but will NOT place trades.
 DRY_RUN = False
 

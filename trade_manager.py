@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 
 class TradeManager:
     def __init__(
@@ -15,6 +17,13 @@ class TradeManager:
         execution_modes: dict,
         close_first_leg_if_second_fails: bool = True,
         allow_volume_normalization: bool = False,
+        enable_time_exit: bool = False,
+        time_exit_hours: float = 0.0,
+        time_exit_min_profit: float = 0.0,
+        enable_max_hold: bool = False,
+        max_hold_hours: float = 0.0,
+        min_hold_minutes: float = 0.0,
+        now_provider=time.time,
     ):
         self.logger = logger
         self.broker = broker
@@ -27,6 +36,13 @@ class TradeManager:
         self.execution_modes = execution_modes
         self.close_first_leg_if_second_fails = close_first_leg_if_second_fails
         self.allow_volume_normalization = allow_volume_normalization
+        self.enable_time_exit = enable_time_exit
+        self.time_exit_hours = time_exit_hours
+        self.time_exit_min_profit = time_exit_min_profit
+        self.enable_max_hold = enable_max_hold
+        self.max_hold_hours = max_hold_hours
+        self.min_hold_minutes = min_hold_minutes
+        self._now_provider = now_provider
         self._configuration_failures: set[tuple[str, str]] = set()
 
     def manage_existing_pair(
@@ -44,39 +60,94 @@ class TradeManager:
             return False
 
         profit = sum(p.profit for p in positions)
+        holding_seconds = self._holding_seconds(positions)
 
         if len(positions) != 2:
-            self.logger.error(
-                f"{symbol1}/{symbol2}: ORPHAN / INCOMPLETE PAIR detected | legs={len(positions)} | "
-                f"profit={profit:.2f}. Closing immediately."
-            )
+            reason = f"orphan/incomplete pair | legs={len(positions)}"
+            self._log_exit(symbol1, symbol2, holding_seconds, profit, z, reason, level="error")
             self.close_pair(symbol1, symbol2)
             return True
 
-        z_display = f"{z:.2f}" if z is not None else "unavailable"
+        z_display = self._format_z(z)
         self.logger.info(
-            f"{symbol1}/{symbol2} OPEN | legs=2 | z={z_display} | profit={profit:.2f}"
+            f"{symbol1}/{symbol2} OPEN | legs=2 | z={z_display} | "
+            f"profit={profit:.2f} | holding={self._format_holding_duration(holding_seconds)}"
         )
 
-        should_close = False
-        reason = ""
+        reason = self._exit_reason(profit, z, profile, holding_seconds)
 
-        exit_z = float(profile["exit_z"])
-        if z is not None and abs(z) < exit_z:
-            should_close = True
-            reason = f"z-score exit | abs({z:.2f}) < {exit_z}"
-        elif profit >= self.profit_target:
-            should_close = True
-            reason = f"profit target | {profit:.2f} >= {self.profit_target}"
-        elif profit <= self.stop_loss:
-            should_close = True
-            reason = f"stop loss | {profit:.2f} <= {self.stop_loss}"
-
-        if should_close:
-            self.logger.info(f"{symbol1}/{symbol2}: closing pair -> {reason}")
+        if reason:
+            self._log_exit(symbol1, symbol2, holding_seconds, profit, z, reason)
             self.close_pair(symbol1, symbol2)
 
         return True
+
+    def _exit_reason(
+        self, profit: float, z: float | None, profile: dict, holding_seconds: float
+    ) -> str:
+        if profit <= self.stop_loss:
+            return f"stop loss | {profit:.2f} <= {self.stop_loss}"
+
+        if profit >= self.profit_target:
+            return f"profit target | {profit:.2f} >= {self.profit_target}"
+
+        exit_z = float(profile["exit_z"])
+        if z is not None and abs(z) < exit_z:
+            return f"mean reversion | abs({z:.2f}) < {exit_z}"
+
+        holding_hours = holding_seconds / 3600
+        holding_minutes = holding_seconds / 60
+
+        if (
+            self.enable_time_exit
+            and holding_minutes >= self.min_hold_minutes
+            and holding_hours >= self.time_exit_hours
+            and profit >= self.time_exit_min_profit
+        ):
+            return (
+                f"time exit | holding={self._format_holding_duration(holding_seconds)} >= "
+                f"{self.time_exit_hours}h and profit={profit:.2f} >= {self.time_exit_min_profit}"
+            )
+
+        if self.enable_max_hold and holding_hours >= self.max_hold_hours:
+            return (
+                f"maximum hold | holding={self._format_holding_duration(holding_seconds)} >= "
+                f"{self.max_hold_hours}h"
+            )
+
+        return ""
+
+    def _holding_seconds(self, positions) -> float:
+        oldest_open_time = min(float(p.time) for p in positions)
+        return max(0.0, float(self._now_provider()) - oldest_open_time)
+
+    @staticmethod
+    def _format_holding_duration(seconds: float) -> str:
+        total_seconds = int(seconds)
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, remaining_seconds = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{remaining_seconds:02d}"
+
+    @staticmethod
+    def _format_z(z: float | None) -> str:
+        return f"{z:.2f}" if z is not None else "unavailable"
+
+    def _log_exit(
+        self,
+        symbol1: str,
+        symbol2: str,
+        holding_seconds: float,
+        profit: float,
+        z: float | None,
+        reason: str,
+        level: str = "info",
+    ) -> None:
+        log = getattr(self.logger, level)
+        log(
+            f"{symbol1}/{symbol2}: closing pair | pair={symbol1}/{symbol2} | "
+            f"holding={self._format_holding_duration(holding_seconds)} | "
+            f"profit={profit:.2f} | z={self._format_z(z)} | reason={reason}"
+        )
 
     def close_pair(self, symbol1: str, symbol2: str) -> None:
         positions = self.broker.pair_positions(symbol1, symbol2)

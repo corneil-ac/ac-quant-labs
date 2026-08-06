@@ -31,3 +31,16 @@ class DataManager:
 
         df = pd.merge(df1, df2, on="time", how="inner")
         return df.dropna()
+
+    def get_closed_candles(self, symbol: str, timeframe, bars: int | None = None) -> pd.DataFrame:
+        """Return completed candles only (MT5 position zero is still forming)."""
+        rates = mt5.copy_rates_from_pos(symbol, timeframe, 1, bars or self.history_bars)
+        if rates is None:
+            self.logger.error(f"{symbol}: copy_rates_from_pos returned None")
+            return pd.DataFrame()
+        candles = pd.DataFrame(rates)
+        required = {"time", "open", "high", "low", "close"}
+        if candles.empty or not required.issubset(candles.columns):
+            self.logger.error(f"{symbol}: missing candle data")
+            return pd.DataFrame()
+        return candles.sort_values("time").reset_index(drop=True)

@@ -62,3 +62,9 @@ class CalendarFilter:
                 )
 
         return True, "ok"
+
+    def can_open_symbol(
+        self, symbol: str, now: datetime | None = None
+    ) -> tuple[bool, str]:
+        """Apply the same fail-closed calendar policy to one instrument."""
+        return self.can_open_pair(symbol, "", now)

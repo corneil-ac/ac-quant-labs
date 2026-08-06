@@ -21,8 +21,9 @@ class RiskManager:
     def pair_key(symbol1: str, symbol2: str) -> str:
         return f"{symbol1}_{symbol2}"
 
-    def mark_trade_time(self, symbol1: str, symbol2: str) -> None:
-        self.last_trade_time[self.pair_key(symbol1, symbol2)] = datetime.now()
+    def mark_trade_time(self, symbol1: str, symbol2: str | None = None) -> None:
+        key = self.pair_key(symbol1, symbol2) if symbol2 else symbol1
+        self.last_trade_time[key] = datetime.now()
 
     def cooldown_remaining(self, symbol1: str, symbol2: str):
         key = self.pair_key(symbol1, symbol2)
@@ -52,4 +53,16 @@ class RiskManager:
             secs = int(remaining.total_seconds() % 60)
             return False, f"cooldown {mins:02d}:{secs:02d} remaining"
 
+        return True, "ok"
+
+    def can_open_symbol(self, symbol: str) -> tuple[bool, str]:
+        if symbol in self.broker.open_symbols():
+            return False, "BULLET already owns a position on symbol"
+        if len(self.broker.positions()) >= self.max_total_pairs:
+            return False, f"max total positions reached: {len(self.broker.positions())}/{self.max_total_pairs}"
+        last = self.last_trade_time.get(symbol)
+        if last is not None:
+            remaining = self.cooldown - (datetime.now() - last)
+            if remaining.total_seconds() > 0:
+                return False, "symbol cooldown active"
         return True, "ok"

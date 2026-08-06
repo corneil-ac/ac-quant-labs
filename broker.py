@@ -179,7 +179,7 @@ class Broker:
                 unique.append(c)
         return unique
 
-    def _send_market_order(self, symbol: str, action: str, volume: float, position_ticket: Optional[int] = None, comment: str = "") -> OrderResult:
+    def _send_market_order(self, symbol: str, action: str, volume: float, position_ticket: Optional[int] = None, comment: str = "", stop_loss: Optional[float] = None, take_profit: Optional[float] = None) -> OrderResult:
         tick = mt5.symbol_info_tick(symbol)
         info = mt5.symbol_info(symbol)
 
@@ -205,6 +205,10 @@ class Broker:
 
         if position_ticket is not None:
             base_request["position"] = position_ticket
+        if stop_loss is not None:
+            base_request["sl"] = stop_loss
+        if take_profit is not None:
+            base_request["tp"] = take_profit
 
         if self.dry_run:
             self.logger.info(f"DRY RUN: {action} {symbol} volume={volume} price={price}")
@@ -248,11 +252,11 @@ class Broker:
         self.logger.error(f"{action} {symbol} -> FAILED | {msg}")
         return OrderResult(False, symbol, action, None, result.retcode, result.comment, price)
 
-    def buy(self, symbol: str, volume: float, comment: str) -> OrderResult:
-        return self._send_market_order(symbol, "BUY", volume, comment=comment)
+    def buy(self, symbol: str, volume: float, comment: str, stop_loss=None, take_profit=None) -> OrderResult:
+        return self._send_market_order(symbol, "BUY", volume, comment=comment, stop_loss=stop_loss, take_profit=take_profit)
 
-    def sell(self, symbol: str, volume: float, comment: str) -> OrderResult:
-        return self._send_market_order(symbol, "SELL", volume, comment=comment)
+    def sell(self, symbol: str, volume: float, comment: str, stop_loss=None, take_profit=None) -> OrderResult:
+        return self._send_market_order(symbol, "SELL", volume, comment=comment, stop_loss=stop_loss, take_profit=take_profit)
 
     def close_position(self, position, comment: str) -> OrderResult:
         action = "SELL" if position.type == mt5.POSITION_TYPE_BUY else "BUY"

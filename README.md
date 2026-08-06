@@ -1,69 +1,35 @@
-# Pair Trading Bot V2
+# BULLET Strategy Runtime
 
-This is a safer, cleaner V2 of your MT5 pair trading bot.
+BULLET is an MT5 trading runtime with a strategy-neutral execution pipeline. The
+active MVP runs `TrendMomentumStrategy` independently on EURUSD, GBPUSD, USDJPY,
+and XAUUSD. Legacy statistical-arbitrage modules remain in the repository for
+reference, but `main.py` neither imports nor executes them.
 
-## What changed from V1
+## Strategy
 
-- Broker-compatible filling mode instead of hardcoded IOC.
-- Exit logic is checked before new entries.
-- Symbol lock prevents duplicate stacking.
-- Cooldown prevents rapid re-entry.
-- If second leg fails, bot immediately closes the first leg.
-- Logs are written to the `logs/` folder.
-- Live console dashboard.
+The active strategy combines an H1 close versus EMA 200 trend bias with M15 EMA
+20/50 momentum, an EMA 20 pullback, and a directional confirmation candle. Data
+requests start at MT5 position 1, so the forming candle is excluded. Stops are
+2 ATR(14), and targets are two times the initial risk.
 
-## Install
+Select the registered strategy with `ACTIVE_STRATEGY` in `config.py`. Execution
+only consumes the generic `StrategySignal` contract; it does not calculate EMA
+or ATR values.
 
-Open CMD:
+## Safety
 
-```cmd
-cd "C:\Users\owner\Desktop"
-mkdir pair_trading_bot_v2
+- Calendar checks fail closed and happen before order validation/submission.
+- A BULLET-owned position prevents another entry on the same symbol.
+- A signal candle can be processed only once per symbol.
+- Fixed volume is validated against each symbol's MT5 contract before ordering.
+- `DRY_RUN = True` keeps the complete pipeline while preventing real orders.
+- Successful submissions are appended to `data/trade_journal.csv`.
+
+Install `requirements.txt`, start an authenticated MT5 terminal, and run:
+
+```bash
+python main.py
 ```
 
-Copy these files into that folder.
-
-Then install requirements:
-
-```cmd
-py -m pip install -r requirements.txt
-```
-
-## Run
-
-Make sure MT5 is open and logged into your new demo account.
-
-Then:
-
-```cmd
-cd "C:\Users\owner\Desktop\pair_trading_bot_v2"
-py main.py
-```
-
-## Stop
-
-Press:
-
-```cmd
-CTRL+C
-```
-
-## First safe test
-
-Before letting it trade, open `config.py` and set:
-
-```python
-DRY_RUN = True
-```
-
-Run the bot. It will print trades without placing real demo orders.
-
-When the logs look correct, change:
-
-```python
-DRY_RUN = False
-```
-
-## Important
-
-This is for demo testing and strategy development. Do not use on a live account until you have tested it heavily.
+This project is intended for demo testing and strategy development, not
+untested live-account use.

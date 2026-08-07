@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+from position_exit_manager import PositionExitManager
 from strategy_framework import SignalAction, StrategySignal
 
 
@@ -11,7 +12,9 @@ class ExecutionManager:
 
     def __init__(self, logger, broker, risk_manager, calendar_filter, volume: float,
                  entry_comment: str, allow_volume_normalization: bool = False,
-                 journal_path: str = "data/trade_journal.csv") -> None:
+                 journal_path: str = "data/trade_journal.csv",
+                 enable_max_hold: bool = False, max_hold_hours: float = 0.0,
+                 exit_comment: str = "bullet_auto_exit", now_provider=None) -> None:
         self.logger = logger
         self.broker = broker
         self.risk = risk_manager
@@ -20,8 +23,17 @@ class ExecutionManager:
         self.entry_comment = entry_comment
         self.allow_volume_normalization = allow_volume_normalization
         self.journal_path = Path(journal_path)
+        exit_options = {}
+        if now_provider is not None:
+            exit_options["now_provider"] = now_provider
+        self.exit_manager = PositionExitManager(
+            logger, broker, enable_max_hold, max_hold_hours, exit_comment, **exit_options
+        )
         self._handled_candles: set[tuple[str, object]] = set()
         self._configuration_failures: set[str] = set()
+
+    def manage_exits(self) -> None:
+        self.exit_manager.manage_exits()
 
     def process(self, signal: StrategySignal) -> bool:
         if signal.action is SignalAction.HOLD or signal.symbol in self._configuration_failures:

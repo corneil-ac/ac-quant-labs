@@ -135,11 +135,16 @@ class Broker:
     def account_info(self):
         return mt5.account_info()
 
-    def positions(self):
+    def account_positions(self):
+        """Return every open MT5 position, regardless of its owner."""
         positions = mt5.positions_get()
         if positions is None:
             return []
-        return [p for p in positions if p.magic == self.magic]
+        return list(positions)
+
+    def positions(self):
+        """Return only positions owned by the current BULLET deployment."""
+        return [p for p in self.account_positions() if p.magic == self.magic]
 
     def positions_for_symbols(self, symbols: set[str]):
         return [p for p in self.positions() if p.symbol in symbols]
@@ -259,6 +264,10 @@ class Broker:
         return self._send_market_order(symbol, "SELL", volume, comment=comment, stop_loss=stop_loss, take_profit=take_profit)
 
     def close_position(self, position, comment: str) -> OrderResult:
+        if position.magic != self.magic:
+            msg = f"{position.symbol}: refusing to close position not owned by BULLET"
+            self.logger.error(msg)
+            return OrderResult(False, position.symbol, "CLOSE", None, None, msg, None)
         action = "SELL" if position.type == mt5.POSITION_TYPE_BUY else "BUY"
         return self._send_market_order(
             symbol=position.symbol,

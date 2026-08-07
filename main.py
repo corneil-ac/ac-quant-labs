@@ -36,7 +36,8 @@ def build_runtime(logger):
     execution = ExecutionManager(
         logger, broker, risk, calendar, config.FIXED_VOLUME,
         config.ORDER_COMMENT_ENTRY, config.ALLOW_VOLUME_NORMALIZATION,
-        config.TRADE_JOURNAL_PATH,
+        config.TRADE_JOURNAL_PATH, config.ENABLE_MAX_HOLD, config.MAX_HOLD_HOURS,
+        config.ORDER_COMMENT_EXIT,
     )
     return broker, data, strategy, provider, execution
 
@@ -44,6 +45,7 @@ def build_runtime(logger):
 def run_scan(logger, broker, data, strategy, calendar_provider, execution):
     snapshots = []
     calendar_provider.refresh()
+    execution.manage_exits()
     for symbol in config.SYMBOLS:
         candles = {
             "H1": data.get_closed_candles(symbol, TIMEFRAMES["H1"]),

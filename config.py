@@ -12,7 +12,10 @@ COOLDOWN_MINUTES = 15
 DRY_RUN = False
 MAGIC = 999999
 DEVIATION = 10
+ENABLE_MAX_HOLD = True
+MAX_HOLD_HOURS = 2
 ORDER_COMMENT_ENTRY = "bullet_trend_momentum"
+ORDER_COMMENT_EXIT = "bullet_auto_exit"
 TRADE_JOURNAL_PATH = "data/trade_journal.csv"
 
 CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"

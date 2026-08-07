@@ -48,7 +48,7 @@ def test_diagnostics_explain_directional_decisions(action):
 
 def test_hold_reports_exact_failed_gate_and_complete_format():
     data = market("BUY")
-    data["M15"].loc[69, "low"] = 200.5
+    data["M15"].loc[67:, "low"] = data["M15"].loc[67:, "close"]
     signal = TrendMomentumStrategy().evaluate("EURUSD", data)
     diagnostics = diagnose_trend_momentum(signal, data)
     output = diagnostics.format()

@@ -13,6 +13,30 @@ from strategy_framework import (
 )
 
 
+def has_ema_pullback(
+    candles: pd.DataFrame,
+    ema: pd.Series,
+    direction: SignalAction,
+    lookback: int,
+) -> bool:
+    """Return whether price has touched the EMA in the recent entry setup.
+
+    A pullback and its confirmation do not necessarily happen in the same
+    candle.  Compare every candle with the EMA value calculated for that
+    candle, rather than comparing earlier prices with today's EMA.
+    """
+    if lookback < 1:
+        raise ValueError("pullback_lookback must be at least 1")
+
+    recent = candles.tail(lookback)
+    recent_ema = ema.reindex(recent.index)
+    if direction is SignalAction.BUY:
+        return bool((recent["low"] <= recent_ema).any())
+    if direction is SignalAction.SELL:
+        return bool((recent["high"] >= recent_ema).any())
+    return False
+
+
 class TrendMomentumStrategy(TradingStrategy):
     name = "TrendMomentumStrategy"
     timeframe = "M15"
@@ -25,11 +49,15 @@ class TrendMomentumStrategy(TradingStrategy):
         atr_period: int = 14,
         stop_atr_multiple: float = 2.0,
         reward_to_risk: float = 2.0,
+        pullback_lookback: int = 3,
     ) -> None:
         self.trend_ema_period = trend_ema_period
         self.fast_ema_period = fast_ema_period
         self.slow_ema_period = slow_ema_period
         self.atr_period = atr_period
+        if pullback_lookback < 1:
+            raise ValueError("pullback_lookback must be at least 1")
+        self.pullback_lookback = pullback_lookback
         self.stop_atr_multiple = stop_atr_multiple
         self.reward_to_risk = reward_to_risk
 
@@ -81,12 +109,18 @@ class TrendMomentumStrategy(TradingStrategy):
 
         bullish = float(candle["close"]) > float(candle["open"])
         bearish = float(candle["close"]) < float(candle["open"])
+        buy_pullback = has_ema_pullback(
+            m15, m15["ema_fast"], SignalAction.BUY, self.pullback_lookback
+        )
+        sell_pullback = has_ema_pullback(
+            m15, m15["ema_fast"], SignalAction.SELL, self.pullback_lookback
+        )
         buy = (
             trend["close"] > trend["ema_trend"]
             and candle["ema_fast"] > candle["ema_slow"]
             and candle["close"] > candle["ema_fast"]
             and candle["close"] > candle["ema_slow"]
-            and candle["low"] <= candle["ema_fast"]
+            and buy_pullback
             and bullish
         )
         sell = (
@@ -94,7 +128,7 @@ class TrendMomentumStrategy(TradingStrategy):
             and candle["ema_fast"] < candle["ema_slow"]
             and candle["close"] < candle["ema_fast"]
             and candle["close"] < candle["ema_slow"]
-            and candle["high"] >= candle["ema_fast"]
+            and sell_pullback
             and bearish
         )
         distance = self.stop_atr_multiple * atr

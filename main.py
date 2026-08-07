@@ -12,6 +12,7 @@ from dashboard import show_dashboard
 from data_manager import DataManager
 from execution_manager import ExecutionManager
 from logger_setup import setup_logger
+from maximum_hold_manager import MaximumHoldManager, process_entry_unless_expired
 from risk_manager import RiskManager
 from strategy_framework import strategy_registry
 import trend_momentum_strategy  # noqa: F401 - registers the configured strategy
@@ -44,13 +45,16 @@ def build_runtime(logger):
 def run_scan(logger, broker, data, strategy, calendar_provider, execution):
     snapshots = []
     calendar_provider.refresh()
+    expired_symbols = MaximumHoldManager(
+        logger, broker, config.MAX_HOLD_HOURS, config.ENABLE_MAX_HOLD
+    ).expire_positions()
     for symbol in config.SYMBOLS:
         candles = {
             "H1": data.get_closed_candles(symbol, TIMEFRAMES["H1"]),
             "M15": data.get_closed_candles(symbol, TIMEFRAMES["M15"]),
         }
         signal = strategy.evaluate(symbol, candles)
-        opened = execution.process(signal)
+        opened = process_entry_unless_expired(execution, signal, expired_symbols)
         logger.info(
             f"{symbol}: {signal.action.value} | candle={signal.signal_candle_timestamp} | "
             f"reason={signal.reason} | submitted={opened}"

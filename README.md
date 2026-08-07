@@ -8,9 +8,11 @@ reference, but `main.py` neither imports nor executes them.
 ## Strategy
 
 The active strategy combines an H1 close versus EMA 200 trend bias with M15 EMA
-20/50 momentum, an EMA 20 pullback, and a directional confirmation candle. Data
-requests start at MT5 position 1, so the forming candle is excluded. Stops are
-2 ATR(14), and targets are two times the initial risk.
+20/50 momentum, an EMA 20 pullback within the latest three closed M15 candles,
+and a directional confirmation candle. The short lookback lets confirmation
+follow the pullback instead of requiring both events on one candle. Data requests
+start at MT5 position 1, so the forming candle is excluded. Stops are 2 ATR(14),
+and targets are two times the initial risk.
 
 Select the registered strategy with `ACTIVE_STRATEGY` in `config.py`. Execution
 only consumes the generic `StrategySignal` contract; it does not calculate EMA

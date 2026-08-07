@@ -53,6 +53,30 @@ def test_hold_conditions():
     assert signal.action is SignalAction.HOLD
 
 
+def test_confirmation_can_follow_ema20_pullback():
+    data = market("BUY")
+    data["M15"].loc[69, "low"] = 200.5
+    data["M15"].loc[68, "low"] = 190
+
+    signal = TrendMomentumStrategy().evaluate("EURUSD", data)
+
+    assert signal.action is SignalAction.BUY
+
+
+def test_pullback_outside_lookback_does_not_trigger_entry():
+    data = market("BUY")
+    data["M15"].loc[67:, "low"] = data["M15"].loc[67:, "close"]
+
+    signal = TrendMomentumStrategy().evaluate("EURUSD", data)
+
+    assert signal.action is SignalAction.HOLD
+
+
+def test_pullback_lookback_must_be_positive():
+    with pytest.raises(ValueError, match="pullback_lookback"):
+        TrendMomentumStrategy(pullback_lookback=0)
+
+
 def test_closed_candle_fetch_excludes_forming_bar(monkeypatch):
     import data_manager
     rates = np.array([(1, 1., 1., 1., 1.)], dtype=[("time", "i8"), ("open", "f8"), ("high", "f8"), ("low", "f8"), ("close", "f8")])

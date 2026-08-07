@@ -6,6 +6,7 @@ from typing import Mapping
 import pandas as pd
 
 from strategy_framework import SignalAction, StrategySignal
+from trend_momentum_strategy import has_ema_pullback
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,7 @@ def diagnose_trend_momentum(
     fast_ema_period: int = 20,
     slow_ema_period: int = 50,
     atr_period: int = 14,
+    pullback_lookback: int = 3,
 ) -> StrategyDiagnostics:
     """Describe the already-made strategy decision without affecting it."""
     h1 = candles.get("H1", pd.DataFrame()).copy()
@@ -94,9 +96,11 @@ def diagnose_trend_momentum(
     sell_momentum = fast_value < slow_value and close < fast_value and close < slow_value
     m15_direction = "BUY" if buy_momentum else "SELL" if sell_momentum else "NEUTRAL"
     aligned = h1_direction != "NEUTRAL" and m15_direction == h1_direction
-    pullback = aligned and (
-        (h1_direction == "BUY" and float(candle["low"]) <= fast_value)
-        or (h1_direction == "SELL" and float(candle["high"]) >= fast_value)
+    pullback_direction = (
+        SignalAction.BUY if h1_direction == "BUY" else SignalAction.SELL
+    )
+    pullback = aligned and has_ema_pullback(
+        m15, fast, pullback_direction, pullback_lookback
     )
     confirmation = aligned and (
         (h1_direction == "BUY" and close > open_)

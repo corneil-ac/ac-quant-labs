@@ -14,6 +14,7 @@ from execution_manager import ExecutionManager
 from logger_setup import setup_logger
 from maximum_hold_manager import MaximumHoldManager, process_entry_unless_expired
 from risk_manager import RiskManager
+from strategy_diagnostics import diagnose_trend_momentum
 from strategy_framework import strategy_registry
 import trend_momentum_strategy  # noqa: F401 - registers the configured strategy
 
@@ -54,10 +55,19 @@ def run_scan(logger, broker, data, strategy, calendar_provider, execution):
             "M15": data.get_closed_candles(symbol, TIMEFRAMES["M15"]),
         }
         signal = strategy.evaluate(symbol, candles)
+        diagnostics = diagnose_trend_momentum(
+            signal,
+            candles,
+            strategy.trend_ema_period,
+            strategy.fast_ema_period,
+            strategy.slow_ema_period,
+            strategy.atr_period,
+        )
+        logger.info("\n%s", diagnostics.format())
         opened = process_entry_unless_expired(execution, signal, expired_symbols)
         logger.info(
             f"{symbol}: {signal.action.value} | candle={signal.signal_candle_timestamp} | "
-            f"reason={signal.reason} | submitted={opened}"
+            f"reason={diagnostics.reason} | submitted={opened}"
         )
         positions = [p for p in broker.positions() if p.symbol == symbol]
         snapshots.append({

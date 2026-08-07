@@ -12,7 +12,8 @@ def show_dashboard(logger, broker, snapshots):
     clear_console()
 
     account = broker.account_info()
-    positions = broker.positions()
+    account_positions = broker.account_positions()
+    bullet_positions = broker.positions()
     print("=" * 60)
     print("BULLET STRATEGY RUNTIME")
     print("=" * 60)
@@ -24,7 +25,8 @@ def show_dashboard(logger, broker, snapshots):
         print(f"Equity     : {account.equity:.2f}")
         print(f"Margin Free: {account.margin_free:.2f}")
 
-    print(f"Positions  : {len(positions)}")
+    print(f"Account Positions : {len(account_positions)}")
+    print(f"BULLET Positions  : {len(bullet_positions)}")
     print("-" * 60)
 
     for snap in snapshots:

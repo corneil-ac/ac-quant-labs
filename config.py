@@ -6,6 +6,12 @@ FIXED_VOLUME = 0.01
 ALLOW_VOLUME_NORMALIZATION = False
 HISTORY_BARS = 300
 SCAN_SECONDS = 60
+DATA_FETCH_RETRIES = 3
+DATA_FETCH_RETRY_SECONDS = 2
+MT5_RECOVERY_WAIT_SECONDS = 1
+# A scan with this many symbols missing either required timeframe is treated as
+# a probable feed-wide outage.  Keep this configurable for other deployments.
+DATA_FEED_OUTAGE_THRESHOLD = len(SYMBOLS)
 
 ENABLE_MAX_HOLD = True
 MAX_HOLD_HOURS = 2.0

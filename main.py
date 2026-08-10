@@ -24,7 +24,11 @@ TIMEFRAMES = {"M15": mt5.TIMEFRAME_M15, "H1": mt5.TIMEFRAME_H1}
 
 def build_runtime(logger):
     broker = Broker(logger, config.MAGIC, config.DEVIATION, config.DRY_RUN)
-    data = DataManager(logger, TIMEFRAMES["M15"], config.HISTORY_BARS)
+    data = DataManager(
+        logger, TIMEFRAMES["M15"], config.HISTORY_BARS,
+        config.DATA_FETCH_RETRIES, config.DATA_FETCH_RETRY_SECONDS,
+        config.MT5_RECOVERY_WAIT_SECONDS,
+    )
     strategy = strategy_registry.create(config.ACTIVE_STRATEGY)
     provider = CalendarProvider(
         logger, config.CALENDAR_URL, config.CALENDAR_CACHE_PATH,
@@ -45,6 +49,8 @@ def build_runtime(logger):
 
 def run_scan(logger, broker, data, strategy, calendar_provider, execution):
     snapshots = []
+    failed_symbols = []
+    data.begin_scan()
     calendar_provider.refresh()
     expired_symbols = MaximumHoldManager(
         logger, broker, config.MAX_HOLD_HOURS, config.ENABLE_MAX_HOLD
@@ -54,6 +60,20 @@ def run_scan(logger, broker, data, strategy, calendar_provider, execution):
             "H1": data.get_closed_candles(symbol, TIMEFRAMES["H1"]),
             "M15": data.get_closed_candles(symbol, TIMEFRAMES["M15"]),
         }
+        if any(frame.empty for frame in candles.values()):
+            failed_symbols.append(symbol)
+            logger.error(
+                "%s: DATA UNAVAILABLE / DATA FEED FAILURE | no strategy "
+                "decision or order submission",
+                symbol,
+            )
+            positions = [p for p in broker.positions() if p.symbol == symbol]
+            snapshots.append({
+                "symbol": symbol, "signal": "DATA_UNAVAILABLE",
+                "open": len(positions),
+                "profit": f"{sum(p.profit for p in positions):.2f}",
+            })
+            continue
         signal = strategy.evaluate(symbol, candles)
         diagnostics = diagnose_trend_momentum(
             signal,
@@ -65,8 +85,12 @@ def run_scan(logger, broker, data, strategy, calendar_provider, execution):
         )
         logger.info("\n%s", diagnostics.format())
         opened = process_entry_unless_expired(execution, signal, expired_symbols)
+        decision_kind = (
+            "STRATEGY HOLD" if signal.action.value == "HOLD" else "STRATEGY SIGNAL"
+        )
         logger.info(
-            f"{symbol}: {signal.action.value} | candle={signal.signal_candle_timestamp} | "
+            f"{symbol}: {decision_kind} ({signal.action.value}) | "
+            f"candle={signal.signal_candle_timestamp} | "
             f"reason={diagnostics.reason} | submitted={opened}"
         )
         positions = [p for p in broker.positions() if p.symbol == symbol]
@@ -74,6 +98,12 @@ def run_scan(logger, broker, data, strategy, calendar_provider, execution):
             "symbol": symbol, "signal": signal.action.value,
             "open": len(positions), "profit": f"{sum(p.profit for p in positions):.2f}",
         })
+    threshold = max(1, min(config.DATA_FEED_OUTAGE_THRESHOLD, len(config.SYMBOLS)))
+    if len(failed_symbols) >= threshold:
+        logger.critical(
+            "PROBABLE MT5/DATA-FEED OUTAGE | failed_symbols=%s/%s | symbols=%s",
+            len(failed_symbols), len(config.SYMBOLS), ",".join(failed_symbols),
+        )
     show_dashboard(logger, broker, snapshots)
 
 

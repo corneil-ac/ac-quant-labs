@@ -21,7 +21,10 @@ or ATR values.
 ## Safety
 
 - Calendar checks fail closed and happen before order validation/submission.
-- A BULLET-owned position prevents another entry on the same symbol.
+- A trend can scale in up to `MAX_POSITIONS_PER_SYMBOL` entries, while the
+  symbol cooldown spaces entries across distinct closed candles.
+- The portfolio-wide `MAX_OPEN_POSITIONS` cap remains authoritative when
+  multiple symbols or scale-in entries compete for capacity.
 - A signal candle can be processed only once per symbol.
 - Fixed volume is validated against each symbol's MT5 contract before ordering.
 - `DRY_RUN = True` keeps the complete pipeline while preventing real orders.

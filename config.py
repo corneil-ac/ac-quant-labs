@@ -17,6 +17,9 @@ ENABLE_MAX_HOLD = True
 MAX_HOLD_HOURS = 2.0
 
 MAX_OPEN_POSITIONS = 2
+# Permit a confirmed trend to add one position after the symbol cooldown.  The
+# portfolio-wide limit above remains authoritative across all symbols.
+MAX_POSITIONS_PER_SYMBOL = 2
 COOLDOWN_MINUTES = 15
 DRY_RUN = False
 MAGIC = 999999

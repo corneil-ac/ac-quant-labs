@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 
 from strategy_framework import SignalAction, StrategySignal
@@ -54,6 +55,13 @@ class ExecutionManager:
             self.logger.error(f"{signal.symbol}: entry rejected -> {validation.reason}")
             return False
 
+        self.logger.info(
+            "%s: ENTRY %s | strategy=%s | source=%s | reason=%s | details=%s",
+            signal.symbol, signal.action.value, signal.strategy_name,
+            signal.entry_source or "UNSPECIFIED",
+            signal.entry_reason or signal.reason, signal.entry_details or {},
+        )
+
         order = (self.broker.buy if signal.action is SignalAction.BUY else self.broker.sell)(
             signal.symbol, validation.normalized, comment=self.entry_comment,
             stop_loss=signal.stop_loss, take_profit=signal.take_profit,
@@ -67,8 +75,24 @@ class ExecutionManager:
     def _journal(self, signal, volume, order) -> None:
         self.journal_path.parent.mkdir(parents=True, exist_ok=True)
         exists = self.journal_path.exists()
+        # Upgrade the original nine-column CSV in place so historical rows
+        # remain readable and every new row can carry AQL-0044 attribution.
+        if exists:
+            with self.journal_path.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.reader(handle))
+            if rows and rows[0] == ["signal_time", "symbol", "action", "volume", "entry",
+                                    "stop_loss", "take_profit", "strategy", "ticket"]:
+                upgraded = [rows[0][:-1] + ["entry_source", "entry_reason", "entry_details", "ticket"]]
+                upgraded.extend(row[:-1] + ["", "", "", row[-1]] for row in rows[1:] if row)
+                with self.journal_path.open("w", newline="", encoding="utf-8") as handle:
+                    csv.writer(handle).writerows(upgraded)
         with self.journal_path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
             if not exists:
-                writer.writerow(["signal_time", "symbol", "action", "volume", "entry", "stop_loss", "take_profit", "strategy", "ticket"])
-            writer.writerow([signal.signal_candle_timestamp, signal.symbol, signal.action.value, volume, signal.entry_reference, signal.stop_loss, signal.take_profit, signal.strategy_name, order.ticket])
+                writer.writerow(["signal_time", "symbol", "action", "volume", "entry", "stop_loss", "take_profit", "strategy", "entry_source", "entry_reason", "entry_details", "ticket"])
+            writer.writerow([signal.signal_candle_timestamp, signal.symbol, signal.action.value,
+                             volume, signal.entry_reference, signal.stop_loss,
+                             signal.take_profit, signal.strategy_name,
+                             signal.entry_source, signal.entry_reason,
+                             json.dumps(signal.entry_details or {}, default=str, sort_keys=True),
+                             order.ticket])

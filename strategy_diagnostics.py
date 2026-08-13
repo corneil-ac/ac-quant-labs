@@ -23,14 +23,15 @@ class StrategyDiagnostics:
     take_profit: float | None
     final_decision: str
     reason: str
+    entry_source: str | None = None
+    module_results: Mapping[str, Mapping[str, object]] | None = None
 
     @staticmethod
     def _number(value: float | None) -> str:
         return "N/A" if value is None or pd.isna(value) else f"{value:.10g}"
 
     def format(self) -> str:
-        return "\n".join(
-            (
+        lines = [
                 f"{self.symbol} Strategy Decision Diagnostics",
                 f"H1 Trend Direction      : {self.h1_direction}",
                 f"H1 Trend                : {self.h1_trend}",
@@ -44,8 +45,11 @@ class StrategyDiagnostics:
                 f"Final Decision          : {self.final_decision}",
                 "Reason:",
                 self.reason,
-            )
-        )
+        ]
+        lines.insert(-2, f"Entry Source            : {self.entry_source or 'NONE'}")
+        for name, result in (self.module_results or {}).items():
+            lines.insert(-2, f"Entry Module {name:<25}: {result.get('status')} | {result.get('reason')}")
+        return "\n".join(lines)
 
 
 def diagnose_trend_momentum(
@@ -70,7 +74,8 @@ def diagnose_trend_momentum(
         return StrategyDiagnostics(
             signal.symbol, "NEUTRAL", "FAIL", "NEUTRAL", "FAIL", "FAIL",
             "FAIL", None, signal.stop_loss, signal.take_profit,
-            signal.action.value, "Insufficient closed candle data.",
+            signal.action.value, "Insufficient closed candle data.", signal.entry_source,
+            (signal.entry_details or {}).get("module_results", {}),
         )
 
     h1_ema = h1["close"].ewm(span=trend_ema_period, adjust=False).mean().iloc[-1]
@@ -115,11 +120,6 @@ def diagnose_trend_momentum(
         reason = "Waiting for H1 trend direction."
     elif not aligned:
         reason = f"Waiting for M15 momentum aligned with H1 {h1_direction} trend."
-    elif not pullback:
-        reason = "Waiting for EMA20 pullback."
-    elif not confirmation:
-        candle_type = "bullish" if h1_direction == "BUY" else "bearish"
-        reason = f"Waiting for {candle_type} confirmation candle."
     else:
         reason = signal.reason.rstrip(".") + "."
 
@@ -136,4 +136,6 @@ def diagnose_trend_momentum(
         signal.take_profit,
         signal.action.value,
         reason,
+        signal.entry_source,
+        (signal.entry_details or {}).get("module_results", {}),
     )

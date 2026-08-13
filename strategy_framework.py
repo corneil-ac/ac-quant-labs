@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Mapping
+from typing import Any, Mapping
 
 import pandas as pd
 
@@ -26,6 +26,11 @@ class StrategySignal:
     strategy_name: str
     timeframe: str
     reason: str
+    # Appended optional fields preserve positional compatibility for existing
+    # strategies and execution consumers.
+    entry_source: str | None = None
+    entry_reason: str | None = None
+    entry_details: Mapping[str, Any] | None = None
 
 
 class TradingStrategy(ABC):

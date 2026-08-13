@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections import Counter
 
 import MetaTrader5 as mt5
 
@@ -20,6 +21,7 @@ import trend_momentum_strategy  # noqa: F401 - registers the configured strategy
 
 
 TIMEFRAMES = {"M15": mt5.TIMEFRAME_M15, "H1": mt5.TIMEFRAME_H1}
+ACTIVITY_METRICS = Counter()
 
 
 def build_runtime(logger):
@@ -48,6 +50,7 @@ def build_runtime(logger):
 
 
 def run_scan(logger, broker, data, strategy, calendar_provider, execution):
+    ACTIVITY_METRICS["scans"] += 1
     snapshots = []
     failed_symbols = []
     data.begin_scan()
@@ -75,6 +78,11 @@ def run_scan(logger, broker, data, strategy, calendar_provider, execution):
             })
             continue
         signal = strategy.evaluate(symbol, candles)
+        ACTIVITY_METRICS["signals_evaluated"] += 1
+        ACTIVITY_METRICS[f"{signal.action.value.lower()}_signals"] += 1
+        for source, result in (signal.entry_details or {}).get("module_results", {}).items():
+            if result.get("status") == "PASS":
+                ACTIVITY_METRICS[f"qualified_{source}"] += 1
         diagnostics = diagnose_trend_momentum(
             signal,
             candles,
@@ -85,6 +93,8 @@ def run_scan(logger, broker, data, strategy, calendar_provider, execution):
         )
         logger.info("\n%s", diagnostics.format())
         opened = process_entry_unless_expired(execution, signal, expired_symbols)
+        if opened and signal.entry_source:
+            ACTIVITY_METRICS[f"trades_opened_{signal.entry_source}"] += 1
         decision_kind = (
             "STRATEGY HOLD" if signal.action.value == "HOLD" else "STRATEGY SIGNAL"
         )
@@ -104,6 +114,7 @@ def run_scan(logger, broker, data, strategy, calendar_provider, execution):
             "PROBABLE MT5/DATA-FEED OUTAGE | failed_symbols=%s/%s | symbols=%s",
             len(failed_symbols), len(config.SYMBOLS), ",".join(failed_symbols),
         )
+    logger.info("AQL-0044 activity metrics | %s", dict(sorted(ACTIVITY_METRICS.items())))
     show_dashboard(logger, broker, snapshots)
 
 

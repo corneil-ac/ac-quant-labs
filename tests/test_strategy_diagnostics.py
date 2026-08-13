@@ -28,7 +28,12 @@ def market(direction):
 
         # Recent EMA20 pullback followed by bullish confirmation
         m15.loc[68, "low"] = 190
-        m15.loc[69, ["open", "high", "low", "close"]] = [198, 202, 197, 201]
+        m15.loc[69, ["open", "high", "low", "close"]] = [
+            198,
+            202,
+            197,
+            201,
+        ]
 
     else:
         h1 = candles(np.linspace(200, 100, 220))
@@ -36,7 +41,12 @@ def market(direction):
 
         # Recent EMA20 pullback followed by bearish confirmation
         m15.loc[68, "high"] = 110
-        m15.loc[69, ["open", "high", "low", "close"]] = [102, 103, 98, 99]
+        m15.loc[69, ["open", "high", "low", "close"]] = [
+            102,
+            103,
+            98,
+            99,
+        ]
 
     return {"H1": h1, "M15": m15}
 
@@ -44,8 +54,16 @@ def market(direction):
 @pytest.mark.parametrize("action", ["BUY", "SELL"])
 def test_diagnostics_explain_directional_decisions(action):
     data = market(action)
-    signal = TrendMomentumStrategy().evaluate("EURUSD", data)
-    diagnostics = diagnose_trend_momentum(signal, data)
+
+    signal = TrendMomentumStrategy().evaluate(
+        "EURUSD",
+        data,
+    )
+
+    diagnostics = diagnose_trend_momentum(
+        signal,
+        data,
+    )
 
     assert diagnostics.final_decision == action
     assert diagnostics.h1_direction == action
@@ -61,24 +79,69 @@ def test_diagnostics_explain_directional_decisions(action):
 
 def test_hold_reports_exact_failed_gate_and_complete_format():
     data = market("BUY")
+
+    # Remove the recent EMA20 pullback.
     data["M15"].loc[67:, "low"] = data["M15"].loc[67:, "close"]
-    signal = TrendMomentumStrategy().evaluate("EURUSD", data)
-    diagnostics = diagnose_trend_momentum(signal, data)
+
+    # This test specifically validates EMA20 pullback diagnostics.
+    # AQL-0044 added alternative entry modules that may legitimately
+    # generate a BUY signal even when EMA20_PULLBACK fails.
+    # Disable those modules so this remains an EMA20-only regression test.
+    ema_only = {
+        "EMA20_PULLBACK": {
+            "enabled": True,
+            "pullback_lookback": 3,
+        },
+        "NEAR_EMA": {
+            "enabled": False,
+        },
+        "MOMENTUM_CONTINUATION": {
+            "enabled": False,
+        },
+        "BREAKOUT_CONTINUATION": {
+            "enabled": False,
+        },
+        "STRONG_TREND_CONTINUATION": {
+            "enabled": False,
+        },
+    }
+
+    signal = TrendMomentumStrategy(multi_entry_config=ema_only).evaluate(
+        "EURUSD",
+        data,
+    )
+
+    diagnostics = diagnose_trend_momentum(
+        signal,
+        data,
+    )
+
     output = diagnostics.format()
 
     assert signal.action is SignalAction.HOLD
-    assert diagnostics.reason == "Waiting for EMA20 pullback."
+    assert diagnostics.reason == "no enabled entry module qualified."
     assert "ATR(14)" in output
     assert "Calculated Stop Loss" in output
     assert "Calculated Take Profit" in output
     assert "Final Decision          : HOLD" in output
-    assert output.endswith("Reason:\nWaiting for EMA20 pullback.")
+    assert output.endswith("Reason:\nno enabled entry module qualified.")
 
 
 def test_insufficient_data_hold_is_diagnostic():
-    data = {"H1": pd.DataFrame(), "M15": pd.DataFrame()}
-    signal = TrendMomentumStrategy().evaluate("EURUSD", data)
-    diagnostics = diagnose_trend_momentum(signal, data)
+    data = {
+        "H1": pd.DataFrame(),
+        "M15": pd.DataFrame(),
+    }
+
+    signal = TrendMomentumStrategy().evaluate(
+        "EURUSD",
+        data,
+    )
+
+    diagnostics = diagnose_trend_momentum(
+        signal,
+        data,
+    )
 
     assert diagnostics.final_decision == "HOLD"
     assert diagnostics.reason == "Insufficient closed candle data."

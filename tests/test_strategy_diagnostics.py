@@ -10,21 +10,34 @@ from trend_momentum_strategy import TrendMomentumStrategy
 
 def candles(values):
     values = np.asarray(values, dtype=float)
-    return pd.DataFrame({
-        "time": np.arange(len(values)), "open": values,
-        "high": values + 0.2, "low": values - 0.2, "close": values,
-    })
+    return pd.DataFrame(
+        {
+            "time": np.arange(len(values)),
+            "open": values,
+            "high": values + 0.2,
+            "low": values - 0.2,
+            "close": values,
+        }
+    )
 
 
 def market(direction):
     if direction == "BUY":
         h1 = candles(np.linspace(100, 200, 220))
         m15 = candles(np.linspace(150, 200, 70))
+
+        # Recent EMA20 pullback followed by bullish confirmation
+        m15.loc[68, "low"] = 190
         m15.loc[69, ["open", "high", "low", "close"]] = [198, 202, 197, 201]
+
     else:
         h1 = candles(np.linspace(200, 100, 220))
         m15 = candles(np.linspace(150, 100, 70))
+
+        # Recent EMA20 pullback followed by bearish confirmation
+        m15.loc[68, "high"] = 110
         m15.loc[69, ["open", "high", "low", "close"]] = [102, 103, 98, 99]
+
     return {"H1": h1, "M15": m15}
 
 

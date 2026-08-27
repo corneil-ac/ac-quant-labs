@@ -78,6 +78,14 @@ class TestFillingModeExecution:
         assert order.ok
         assert send.call_args.args[0]["type_filling"] == 0
 
+    def test_duplicate_mode_retains_highest_priority_source(self):
+        self.broker._successful_filling_modes["EURUSD"] = 1
+
+        candidates = self.broker.filling_candidates("EURUSD", self.info)
+
+        assert candidates == [(1, "cache"), (0, "fallback")]
+        assert [mode for mode, _source in candidates].count(1) == 1
+
     def test_cached_unsupported_mode_is_invalidated_and_fallback_cached(self):
         self.broker._successful_filling_modes["EURUSD"] = 0
         order, send = self.execute([

@@ -41,6 +41,15 @@ def test_position_older_than_two_hours_closes():
     broker.close_position.assert_called_once()
 
 
+def test_failed_expired_close_is_retried_on_next_scan():
+    hold_manager, broker = manager([position(2 * 3600 + 1)])
+    broker.close_position.return_value = SimpleNamespace(ok=False)
+
+    assert hold_manager.expire_positions(NOW) == {"EURUSD"}
+    assert hold_manager.expire_positions(NOW + 60) == {"EURUSD"}
+    assert broker.close_position.call_count == 2
+
+
 def test_position_at_one_hour_fifty_nine_minutes_remains_open():
     hold_manager, broker = manager([position(1 * 3600 + 59 * 60)])
 

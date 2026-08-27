@@ -16,6 +16,7 @@ class OrderResult:
     retcode: Optional[int]
     comment: str
     price: Optional[float]
+    failure_reason: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,9 @@ class Broker:
         self.magic = magic
         self.deviation = deviation
         self.dry_run = dry_run
+        # A successful fill is better evidence than sometimes-inaccurate symbol
+        # metadata.  This cache deliberately lasts only for this Broker runtime.
+        self._successful_filling_modes: dict[str, int] = {}
 
     def initialize(self) -> bool:
         if not mt5.initialize():
@@ -156,28 +160,85 @@ class Broker:
     def pair_profit(self, symbol1: str, symbol2: str) -> float:
         return sum(p.profit for p in self.pair_positions(symbol1, symbol2))
 
-    def filling_candidates(self, symbol: str):
-        """
-        MT5 brokers are inconsistent here. Some reject symbol_info().filling_mode directly.
-        So we try a safe fallback list until the broker accepts one.
-        """
-        info = mt5.symbol_info(symbol)
+    @staticmethod
+    def classify_rejection(retcode: Optional[int], comment: str = "") -> str:
+        """Return a stable, operational classification for an MT5 rejection."""
+        groups = (
+            ("UNSUPPORTED_FILLING_MODE", ("TRADE_RETCODE_INVALID_FILL",), (10030,)),
+            ("NO_PRICES", ("TRADE_RETCODE_PRICE_OFF",), (10021,)),
+            ("MARKET_CLOSED", (
+                "TRADE_RETCODE_MARKET_CLOSED", "TRADE_RETCODE_TRADE_DISABLED",
+                "TRADE_RETCODE_SERVER_DISABLES_AT", "TRADE_RETCODE_CLIENT_DISABLES_AT",
+            ), (10018, 10017, 10026, 10027)),
+            ("INVALID_STOPS", ("TRADE_RETCODE_INVALID_STOPS",), (10016,)),
+            ("INVALID_VOLUME", ("TRADE_RETCODE_INVALID_VOLUME",), (10014,)),
+            ("INSUFFICIENT_MARGIN", ("TRADE_RETCODE_NO_MONEY",), (10019,)),
+        )
+        for classification, names, standard_values in groups:
+            values = {getattr(mt5, name, None) for name in names}
+            if retcode in values - {None} or retcode in standard_values:
+                return classification
 
+        # Some gateways provide useful text with a missing/nonstandard retcode.
+        normalized = (comment or "").lower()
+        if "unsupported filling" in normalized:
+            return "UNSUPPORTED_FILLING_MODE"
+        if "no prices" in normalized or "no price" in normalized:
+            return "NO_PRICES"
+        if "market closed" in normalized or "trade disabled" in normalized:
+            return "MARKET_CLOSED"
+        return "OTHER_MT5_REJECTION"
+
+    def filling_candidates(self, symbol: str, info=None):
+        """Build a deterministic, capability-aware list of (mode, source)."""
+        info = info if info is not None else mt5.symbol_info(symbol)
+        modes = {
+            "FOK": getattr(mt5, "ORDER_FILLING_FOK", 0),
+            "IOC": getattr(mt5, "ORDER_FILLING_IOC", 1),
+            "RETURN": getattr(mt5, "ORDER_FILLING_RETURN", 2),
+        }
         candidates = []
-        if info is not None:
-            candidates.append(info.filling_mode)
+        cached = self._successful_filling_modes.get(symbol)
+        if cached is not None:
+            candidates.append((cached, "cache"))
 
-        candidates.extend([
-            mt5.ORDER_FILLING_IOC,
-            mt5.ORDER_FILLING_FOK,
-            mt5.ORDER_FILLING_RETURN,
-        ])
+        filling_flags = getattr(info, "filling_mode", None)
+        fok_flag = getattr(mt5, "SYMBOL_FILLING_FOK", 1)
+        ioc_flag = getattr(mt5, "SYMBOL_FILLING_IOC", 2)
+        if filling_flags is not None:
+            # Modern MT5 exposes a flag mask.  A zero value is also accepted for
+            # compatibility with APIs/brokers exposing ORDER_FILLING_FOK itself.
+            if filling_flags == modes["FOK"] or filling_flags & fok_flag:
+                candidates.append((modes["FOK"], "capability"))
+            if filling_flags & ioc_flag:
+                candidates.append((modes["IOC"], "capability"))
+
+        execution = getattr(info, "trade_exemode", getattr(info, "trade_execution", None))
+        market_execution = getattr(mt5, "SYMBOL_TRADE_EXECUTION_MARKET", 2)
+        if execution != market_execution:
+            candidates.append((modes["RETURN"], "capability"))
+
+        # Metadata is advisory.  Deterministic fallback probes the other modes,
+        # except RETURN where MT5 explicitly prohibits it for Market Execution.
+        for mode in (modes["IOC"], modes["FOK"]):
+            candidates.append((mode, "fallback"))
+        if execution != market_execution:
+            candidates.append((modes["RETURN"], "fallback"))
 
         unique = []
-        for c in candidates:
-            if c not in unique:
-                unique.append(c)
+        seen = set()
+        for mode, source in candidates:
+            if mode not in seen:
+                seen.add(mode)
+                unique.append((mode, source))
         return unique
+
+    @staticmethod
+    def _filling_name(mode: int) -> str:
+        for name in ("FOK", "IOC", "RETURN"):
+            if mode == getattr(mt5, f"ORDER_FILLING_{name}", object()):
+                return name
+        return str(mode)
 
     def _send_market_order(self, symbol: str, action: str, volume: float, position_ticket: Optional[int] = None, comment: str = "", stop_loss: Optional[float] = None, take_profit: Optional[float] = None) -> OrderResult:
         tick = mt5.symbol_info_tick(symbol)
@@ -186,7 +247,7 @@ class Broker:
         if tick is None or info is None:
             msg = f"{symbol}: tick or symbol info unavailable"
             self.logger.error(msg)
-            return OrderResult(False, symbol, action, None, None, msg, None)
+            return OrderResult(False, symbol, action, None, None, msg, None, "NO_PRICES")
 
         order_type = mt5.ORDER_TYPE_BUY if action.upper() == "BUY" else mt5.ORDER_TYPE_SELL
         price = tick.ask if action.upper() == "BUY" else tick.bid
@@ -214,9 +275,15 @@ class Broker:
             self.logger.info(f"DRY RUN: {action} {symbol} volume={volume} price={price}")
             return OrderResult(True, symbol, action, 0, 0, "DRY_RUN", price)
 
+        operation = "close" if position_ticket is not None else "entry"
+        context = (
+            f"{symbol} {action.upper()} | operation={operation} | ticket={position_ticket} | "
+            f"volume={volume} | price={price} | bid={getattr(tick, 'bid', None)} | "
+            f"ask={getattr(tick, 'ask', None)}"
+        )
         last_result = None
-
-        for filling in self.filling_candidates(symbol):
+        candidates = self.filling_candidates(symbol, info)
+        for index, (filling, source) in enumerate(candidates):
             request = dict(base_request)
             request["type_filling"] = filling
 
@@ -224,33 +291,46 @@ class Broker:
             last_result = result
 
             if result is None:
-                self.logger.error(f"{action} {symbol} fill={filling} -> order_send returned None | last_error={mt5.last_error()}")
-                continue
+                msg = f"order_send returned None | last_error={mt5.last_error()}"
+                self.logger.error(f"{context} | fill={self._filling_name(filling)} | source={source} | FAILED | class=OTHER_MT5_REJECTION | {msg}")
+                return OrderResult(False, symbol, action, None, None, msg, price, "OTHER_MT5_REJECTION")
 
             if result.retcode == mt5.TRADE_RETCODE_DONE:
                 ticket = getattr(result, "order", None)
-                self.logger.info(f"{action} {symbol} -> DONE | ticket={ticket} | price={price} | filling={filling} | comment={result.comment}")
+                self._successful_filling_modes[symbol] = filling
+                if index:
+                    self.logger.warning(
+                        f"{context} | fill={self._filling_name(filling)} | source=fallback | "
+                        f"SUCCESS | order={ticket} | cached_fill={self._filling_name(filling)}"
+                    )
+                else:
+                    self.logger.info(f"{symbol} {action.upper()} | operation={operation} | fill={self._filling_name(filling)} | source={source} | SUCCESS | order={ticket}")
                 return OrderResult(True, symbol, action, ticket, result.retcode, result.comment, price)
+            classification = self.classify_rejection(result.retcode, result.comment)
+            if classification != "UNSUPPORTED_FILLING_MODE":
+                self.logger.error(
+                    f"{context} | fill={self._filling_name(filling)} | source={source} | FAILED | "
+                    f"retcode={result.retcode} | comment={result.comment} | class={classification}"
+                )
+                return OrderResult(False, symbol, action, None, result.retcode, result.comment, price, classification)
 
-            self.logger.error(f"{action} {symbol} fill={filling} -> FAILED | retcode={result.retcode} | comment={result.comment}")
+            if self._successful_filling_modes.get(symbol) == filling:
+                del self._successful_filling_modes[symbol]
+            if index + 1 < len(candidates):
+                self.logger.warning(
+                    f"{context} | fill={self._filling_name(filling)} | source={source} | FAILED | "
+                    f"retcode={result.retcode} | comment={result.comment} | class={classification}; trying fallback"
+                )
 
-        # Final fallback: send without type_filling and let terminal/broker choose, if allowed.
-        result = mt5.order_send(base_request)
-        last_result = result
-
-        if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
-            ticket = getattr(result, "order", None)
-            self.logger.info(f"{action} {symbol} -> DONE | ticket={ticket} | price={price} | filling=OMITTED | comment={result.comment}")
-            return OrderResult(True, symbol, action, ticket, result.retcode, result.comment, price)
-
-        if result is None:
-            msg = f"all filling modes failed; omitted filling also returned None | last_error={mt5.last_error()}"
-            self.logger.error(f"{action} {symbol} -> FAILED | {msg}")
-            return OrderResult(False, symbol, action, None, None, msg, price)
-
-        msg = f"all filling modes failed | last retcode={result.retcode} | comment={result.comment}"
-        self.logger.error(f"{action} {symbol} -> FAILED | {msg}")
-        return OrderResult(False, symbol, action, None, result.retcode, result.comment, price)
+        result = last_result
+        retcode = getattr(result, "retcode", None)
+        comment = getattr(result, "comment", "all filling modes rejected")
+        classification = self.classify_rejection(retcode, comment)
+        self.logger.error(
+            f"{context} | FAILED | retcode={retcode} | comment={comment} | "
+            f"class={classification} | attempted_fills={len(candidates)}"
+        )
+        return OrderResult(False, symbol, action, None, retcode, comment, price, classification)
 
     def buy(self, symbol: str, volume: float, comment: str, stop_loss=None, take_profit=None) -> OrderResult:
         return self._send_market_order(symbol, "BUY", volume, comment=comment, stop_loss=stop_loss, take_profit=take_profit)

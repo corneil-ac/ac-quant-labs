@@ -48,9 +48,11 @@ class MaximumHoldManager:
                     f"ticket={position.ticket} age={age_hours:.2f}h"
                 )
             else:
-                self.logger.error(
+                # Broker emits the single detailed ERROR for the failed order;
+                # keep the scan-level retry signal concise and non-duplicative.
+                self.logger.warning(
                     f"{symbol}: maximum hold close failed | "
-                    f"ticket={position.ticket} age={age_hours:.2f}h"
+                    f"ticket={position.ticket} age={age_hours:.2f}h | retry=next_scan"
                 )
 
         return {position.symbol for position in expired}

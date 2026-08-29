@@ -283,6 +283,43 @@ def test_one_position_per_symbol_rule():
     broker.validate_volume.assert_not_called()
 
 
+def test_runtime_enables_two_entries_per_symbol():
+    import config
+    from risk_manager import RiskManager
+
+    broker = Mock()
+    broker.positions.return_value = [SimpleNamespace(symbol="EURUSD")]
+    risk = RiskManager(
+        Mock(), broker, config.MAX_OPEN_POSITIONS, 0,
+        config.MAX_POSITIONS_PER_SYMBOL,
+    )
+
+    assert risk.can_open_symbol("EURUSD") == (True, "ok")
+
+
+def test_symbol_entry_cap_blocks_a_third_entry():
+    from risk_manager import RiskManager
+
+    broker = Mock()
+    broker.positions.return_value = [
+        SimpleNamespace(symbol="EURUSD"),
+        SimpleNamespace(symbol="EURUSD"),
+    ]
+    risk = RiskManager(Mock(), broker, 5, 0, max_positions_per_symbol=2)
+
+    allowed, reason = risk.can_open_symbol("EURUSD")
+
+    assert not allowed
+    assert reason == "max positions for symbol reached: 2/2"
+
+
+def test_multi_entry_limit_must_be_positive():
+    from risk_manager import RiskManager
+
+    with pytest.raises(ValueError, match="max_positions_per_symbol"):
+        RiskManager(Mock(), Mock(), 2, 15, max_positions_per_symbol=0)
+
+
 def test_calendar_blocks_before_volume_preflight():
     execution, broker, _, _ = manager(calendar_ok=False)
 

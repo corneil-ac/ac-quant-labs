@@ -40,7 +40,13 @@ def build_runtime(logger):
         provider, config.CALENDAR_BLACKOUT_MINUTES_BEFORE,
         config.CALENDAR_BLACKOUT_MINUTES_AFTER, config.CALENDAR_BLOCKED_IMPACTS,
     )
-    risk = RiskManager(logger, broker, config.MAX_OPEN_POSITIONS, config.COOLDOWN_MINUTES)
+    risk = RiskManager(
+        logger,
+        broker,
+        config.MAX_OPEN_POSITIONS,
+        config.COOLDOWN_MINUTES,
+        config.MAX_POSITIONS_PER_SYMBOL,
+    )
     execution = ExecutionManager(
         logger, broker, risk, calendar, config.FIXED_VOLUME,
         config.ORDER_COMMENT_ENTRY, config.ALLOW_VOLUME_NORMALIZATION,

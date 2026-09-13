@@ -1,6 +1,6 @@
 param(
     [switch]$Headless,
-    [int]$Mt5WaitSeconds = 60
+    [int]$Mt5WaitSeconds = 120
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,13 +27,15 @@ function Find-Mt5Executable {
     }
 
     $candidate = @(
-        (Join-Path $env:ProgramFiles "MetaTrader 5\terminal64.exe"),
-        (Join-Path ${env:ProgramFiles(x86)} "MetaTrader 5\terminal64.exe"),
-        (Join-Path $env:LOCALAPPDATA "Programs\MetaTrader 5\terminal64.exe")
-    ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+        @(
+            (Join-Path $env:ProgramFiles "MetaTrader 5\terminal64.exe"),
+            (Join-Path ${env:ProgramFiles(x86)} "MetaTrader 5\terminal64.exe"),
+            (Join-Path $env:LOCALAPPDATA "Programs\MetaTrader 5\terminal64.exe")
+        ) | Where-Object { $_ -and (Test-Path $_) }
+    )
 
-    if ($candidate) {
-        return [string]$candidate
+    if ($candidate.Count -gt 0) {
+        return [string]$candidate[0]
     }
 
     $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, (Join-Path $env:LOCALAPPDATA "Programs")) |
@@ -85,6 +87,27 @@ function Resolve-Python {
     return $null
 }
 
+function Test-Mt5IpcReady {
+    param($PythonSpec)
+
+    $probe = @"
+import sys
+import MetaTrader5 as mt5
+ok = mt5.initialize(timeout=10000)
+account = mt5.account_info() if ok else None
+if ok:
+    mt5.shutdown()
+sys.exit(0 if ok and account is not None else 1)
+"@
+
+    try {
+        & $PythonSpec.File @($PythonSpec.Prefix) -c $probe *> $null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
+}
+
 function Get-BulletProcess {
     $escapedMain = [regex]::Escape($MainPy)
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
@@ -105,7 +128,15 @@ if (-not (Test-Path $MainPy)) {
     exit 10
 }
 
-# 1) Make sure MetaTrader 5 is running.
+# 1) Resolve Python first so it can also be used for the MT5 IPC readiness probe.
+$python = Resolve-Python
+if (-not $python) {
+    Write-StartupLog "No usable Python installation was found (.venv, venv, py -3, or python)." "ERROR"
+    exit 30
+}
+Write-StartupLog "Python resolved via: $($python.Label)"
+
+# 2) Make sure MetaTrader 5 is running.
 $mt5 = Get-Process terminal64 -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $mt5) {
     $mt5Exe = Find-Mt5Executable
@@ -120,7 +151,7 @@ if (-not $mt5) {
     Write-StartupLog "MT5 is already running (PID $($mt5.Id))."
 }
 
-# 2) Wait for the terminal process to become available.
+# 3) Wait for the terminal process to become available.
 $deadline = (Get-Date).AddSeconds($Mt5WaitSeconds)
 do {
     $mt5 = Get-Process terminal64 -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -133,24 +164,37 @@ if (-not $mt5) {
     exit 21
 }
 
-Write-StartupLog "MT5 process detected (PID $($mt5.Id)). Waiting 8 seconds for terminal initialization."
-Start-Sleep -Seconds 8
+Write-StartupLog "MT5 process detected (PID $($mt5.Id)). Waiting for Python/MT5 IPC readiness."
 
-# 3) Prevent duplicate BULLET instances.
+# A visible terminal process does not guarantee that the MetaTrader5 Python IPC channel
+# is ready. Cold boots can need materially longer than a fixed sleep, which previously
+# caused BULLET to exit later with MT5 error -10005 (IPC timeout).
+$ipcReady = $false
+$probeAttempt = 0
+do {
+    $probeAttempt++
+    if (Test-Mt5IpcReady -PythonSpec $python) {
+        $ipcReady = $true
+        break
+    }
+
+    Write-StartupLog "MT5 IPC is not ready yet (probe $probeAttempt). Retrying in 5 seconds." "WARN"
+    Start-Sleep -Seconds 5
+} while ((Get-Date) -lt $deadline)
+
+if (-not $ipcReady) {
+    Write-StartupLog "MT5 process is running but Python IPC did not become ready within $Mt5WaitSeconds seconds. BULLET will not be started." "ERROR"
+    exit 22
+}
+
+Write-StartupLog "MT5 Python IPC readiness confirmed."
+
+# 4) Prevent duplicate BULLET instances.
 $existingBullet = Get-BulletProcess
 if ($existingBullet) {
     Write-StartupLog "BULLET is already running (PID $($existingBullet.ProcessId)). No duplicate instance will be started." "WARN"
     exit 0
 }
-
-# 4) Resolve a real Python interpreter, avoiding the Microsoft Store alias trap.
-$python = Resolve-Python
-if (-not $python) {
-    Write-StartupLog "No usable Python installation was found (.venv, venv, py -3, or python)." "ERROR"
-    exit 30
-}
-
-Write-StartupLog "Python resolved via: $($python.Label)"
 
 # 5) Start BULLET.
 $bulletOut = Join-Path $LogsDir "bullet_stdout.log"

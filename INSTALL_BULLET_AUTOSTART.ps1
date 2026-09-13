@@ -4,7 +4,15 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptPath = $PSCommandPath
+if (-not $ScriptPath) {
+    $ScriptPath = $MyInvocation.MyCommand.Path
+}
+if (-not $ScriptPath) {
+    throw "Unable to determine the installer script path."
+}
+
+$ProjectRoot = Split-Path -Parent $ScriptPath
 $Launcher = Join-Path $ProjectRoot "START_BULLET.ps1"
 
 function Test-IsAdministrator {
@@ -14,8 +22,15 @@ function Test-IsAdministrator {
 }
 
 function Relaunch-Elevated {
-    $quotedScript = $MyInvocation.MyCommand.Path.Replace("'", "''")
-    $args = "-NoProfile -ExecutionPolicy Bypass -File '$quotedScript' -TaskName '$TaskName' -StartupDelaySeconds $StartupDelaySeconds"
+    param(
+        [string]$InstallerPath,
+        [string]$RequestedTaskName,
+        [int]$RequestedStartupDelaySeconds
+    )
+
+    $quotedScript = $InstallerPath.Replace("'", "''")
+    $quotedTaskName = $RequestedTaskName.Replace("'", "''")
+    $args = "-NoProfile -ExecutionPolicy Bypass -File '$quotedScript' -TaskName '$quotedTaskName' -StartupDelaySeconds $RequestedStartupDelaySeconds"
     Start-Process powershell.exe -Verb RunAs -ArgumentList $args | Out-Null
 }
 
@@ -33,7 +48,7 @@ if (-not (Test-Path $Launcher)) {
 if (-not (Test-IsAdministrator)) {
     Write-Host "Administrator privileges are required to register the scheduled task."
     Write-Host "Requesting elevation..."
-    Relaunch-Elevated
+    Relaunch-Elevated -InstallerPath $ScriptPath -RequestedTaskName $TaskName -RequestedStartupDelaySeconds $StartupDelaySeconds
     exit 0
 }
 

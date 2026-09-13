@@ -26,14 +26,14 @@ function Find-Mt5Executable {
         return $running.ExecutablePath
     }
 
-    $candidates = @(
+    $candidate = @(
         (Join-Path $env:ProgramFiles "MetaTrader 5\terminal64.exe"),
         (Join-Path ${env:ProgramFiles(x86)} "MetaTrader 5\terminal64.exe"),
         (Join-Path $env:LOCALAPPDATA "Programs\MetaTrader 5\terminal64.exe")
-    ) | Where-Object { $_ -and (Test-Path $_) }
+    ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 
-    if ($candidates.Count -gt 0) {
-        return $candidates[0]
+    if ($candidate) {
+        return [string]$candidate
     }
 
     $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, (Join-Path $env:LOCALAPPDATA "Programs")) |

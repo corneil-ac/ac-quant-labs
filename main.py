@@ -9,6 +9,7 @@ import config
 from broker import Broker
 from calendar_filter import CalendarFilter
 from calendar_provider import CalendarProvider
+from campaign_exit_manager import CampaignExitManager
 from campaign_manager import CampaignManager
 from dashboard import show_dashboard
 from data_manager import DataManager
@@ -48,6 +49,16 @@ def build_runtime(logger):
         max_positions_per_symbol=2,
     )
     campaign = CampaignManager(logger)
+    campaign_exit = CampaignExitManager(
+        logger,
+        broker,
+        campaign,
+        # Fail-safe default: coordinated live closes remain OFF until P1.2C
+        # simulation is proven and the operator explicitly enables them.
+        enabled=getattr(config, "CAMPAIGN_EXIT_ENABLED", False),
+        profit_target=getattr(config, "CAMPAIGN_PROFIT_TARGET", 40.0),
+        stop_loss=getattr(config, "CAMPAIGN_STOP_LOSS", -20.0),
+    )
     execution = ExecutionManager(
         logger, broker, risk, calendar, config.FIXED_VOLUME,
         config.ORDER_COMMENT_ENTRY, config.ALLOW_VOLUME_NORMALIZATION,
@@ -63,26 +74,53 @@ def build_runtime(logger):
         require_h1_direction=getattr(config, "SCALE_IN_REQUIRE_H1_DIRECTION", True),
         require_m15_alignment=getattr(config, "SCALE_IN_REQUIRE_M15_ALIGNMENT", True),
     )
-    return broker, data, strategy, provider, execution, scale_in, campaign
+    return broker, data, strategy, provider, execution, scale_in, campaign, campaign_exit
 
 
-def run_scan(logger, broker, data, strategy, calendar_provider, execution, scale_in, campaign):
+def run_scan(logger, broker, data, strategy, calendar_provider, execution, scale_in, campaign, campaign_exit):
     ACTIVITY_METRICS["scans"] += 1
     snapshots = []
     failed_symbols = []
+    campaign_exit_symbols: set[str] = set()
     data.begin_scan()
     calendar_provider.refresh()
 
     if execution.safe_mode:
         logger.critical(
-            "BULLET SAFE MODE ACTIVE | scan continues | new entries and automatic max-hold closes blocked | reason=%s",
+            "BULLET SAFE MODE ACTIVE | scan continues | new entries and automatic exits blocked | reason=%s",
             execution.safe_mode_reason,
         )
         expired_symbols = set()
     else:
-        expired_symbols = MaximumHoldManager(
-            logger, broker, config.MAX_HOLD_HOURS, config.ENABLE_MAX_HOLD
-        ).expire_positions()
+        # Campaign exits are evaluated before ticket-level max-hold handling so a
+        # two-entry campaign cannot be split by two independent exit systems in
+        # the same scan.
+        positions_ok, owned_positions, position_reason = broker.query_owned_positions()
+        if not positions_ok:
+            execution.set_safe_mode(True, f"position state unavailable during campaign exit evaluation: {position_reason}")
+            expired_symbols = set()
+        else:
+            for symbol in config.SYMBOLS:
+                result = campaign_exit.process_symbol(symbol, owned_positions)
+                if result.triggered:
+                    campaign_exit_symbols.add(symbol)
+                    ACTIVITY_METRICS["campaign_exit_triggered"] += 1
+                    if result.complete:
+                        ACTIVITY_METRICS["campaign_exit_complete"] += 1
+                    else:
+                        ACTIVITY_METRICS["campaign_exit_partial_failure"] += 1
+                        execution.set_safe_mode(
+                            True,
+                            f"campaign exit incomplete for {symbol}; failed_tickets={list(result.failed_tickets)}",
+                        )
+                        break
+
+            if execution.safe_mode:
+                expired_symbols = set()
+            else:
+                expired_symbols = MaximumHoldManager(
+                    logger, broker, config.MAX_HOLD_HOURS, config.ENABLE_MAX_HOLD
+                ).expire_positions(excluded_symbols=campaign_exit_symbols)
 
     for symbol in config.SYMBOLS:
         candles = {
@@ -92,15 +130,13 @@ def run_scan(logger, broker, data, strategy, calendar_provider, execution, scale
         if any(frame.empty for frame in candles.values()):
             failed_symbols.append(symbol)
             logger.error(
-                "%s: DATA UNAVAILABLE / DATA FEED FAILURE | no strategy "
-                "decision or order submission",
+                "%s: DATA UNAVAILABLE / DATA FEED FAILURE | no strategy decision or order submission",
                 symbol,
             )
             positions = [p for p in broker.positions() if p.symbol == symbol]
             snapshots.append({
                 "symbol": symbol, "signal": "DATA_UNAVAILABLE",
-                "open": len(positions),
-                "profit": f"{sum(p.profit for p in positions):.2f}",
+                "open": len(positions), "profit": f"{sum(p.profit for p in positions):.2f}",
             })
             continue
 
@@ -114,35 +150,26 @@ def run_scan(logger, broker, data, strategy, calendar_provider, execution, scale
         if signal.action.value != "HOLD" and not execution.safe_mode:
             positions_ok, owned_positions, position_reason = broker.query_owned_positions()
             if not positions_ok:
-                execution.set_safe_mode(
-                    True,
-                    f"position state unavailable during scale-in evaluation: {position_reason}",
-                )
+                execution.set_safe_mode(True, f"position state unavailable during scale-in evaluation: {position_reason}")
             else:
                 signal = scale_in.authorize(signal, owned_positions)
                 if (signal.entry_details or {}).get("scale_in_authorized"):
                     ACTIVITY_METRICS["scale_in_authorized"] += 1
 
         diagnostics = diagnose_trend_momentum(
-            signal,
-            candles,
-            strategy.trend_ema_period,
-            strategy.fast_ema_period,
-            strategy.slow_ema_period,
-            strategy.atr_period,
+            signal, candles, strategy.trend_ema_period, strategy.fast_ema_period,
+            strategy.slow_ema_period, strategy.atr_period,
         )
         logger.info("\n%s", diagnostics.format())
-        opened = process_entry_unless_expired(execution, signal, expired_symbols)
+        barred_symbols = expired_symbols | campaign_exit_symbols
+        opened = process_entry_unless_expired(execution, signal, barred_symbols)
         if opened and signal.entry_source:
             ACTIVITY_METRICS[f"trades_opened_{signal.entry_source}"] += 1
             if (signal.entry_details or {}).get("scale_in_authorized"):
                 ACTIVITY_METRICS["scale_in_opened"] += 1
-        decision_kind = (
-            "STRATEGY HOLD" if signal.action.value == "HOLD" else "STRATEGY SIGNAL"
-        )
+        decision_kind = "STRATEGY HOLD" if signal.action.value == "HOLD" else "STRATEGY SIGNAL"
         logger.info(
-            f"{symbol}: {decision_kind} ({signal.action.value}) | "
-            f"candle={signal.signal_candle_timestamp} | "
+            f"{symbol}: {decision_kind} ({signal.action.value}) | candle={signal.signal_candle_timestamp} | "
             f"reason={diagnostics.reason} | submitted={opened}"
         )
         positions = [p for p in broker.positions() if p.symbol == symbol]
@@ -151,18 +178,15 @@ def run_scan(logger, broker, data, strategy, calendar_provider, execution, scale
             ACTIVITY_METRICS["campaign_snapshots"] += 1
             logger.info(
                 "%s: CAMPAIGN SNAPSHOT | direction=%s | positions=%s | volume=%.4f | weighted_entry=%.8f | pnl=%.2f | valid=%s",
-                symbol,
-                campaign_snapshot.direction,
-                campaign_snapshot.position_count,
-                campaign_snapshot.total_volume,
-                campaign_snapshot.weighted_entry,
-                campaign_snapshot.combined_profit,
-                campaign_snapshot.valid,
+                symbol, campaign_snapshot.direction, campaign_snapshot.position_count,
+                campaign_snapshot.total_volume, campaign_snapshot.weighted_entry,
+                campaign_snapshot.combined_profit, campaign_snapshot.valid,
             )
         snapshots.append({
             "symbol": symbol, "signal": signal.action.value,
             "open": len(positions), "profit": f"{sum(p.profit for p in positions):.2f}",
         })
+
     threshold = max(1, min(config.DATA_FEED_OUTAGE_THRESHOLD, len(config.SYMBOLS)))
     if len(failed_symbols) >= threshold:
         logger.critical(
@@ -175,34 +199,26 @@ def run_scan(logger, broker, data, strategy, calendar_provider, execution, scale
 
 def main():
     logger = setup_logger()
-    broker, data, strategy, provider, execution, scale_in, campaign = build_runtime(logger)
+    broker, data, strategy, provider, execution, scale_in, campaign, campaign_exit = build_runtime(logger)
     if not broker.initialize():
         return
 
     broker.ensure_symbols(config.SYMBOLS)
-
-    reconciliation = reconcile_startup(
-        logger,
-        broker,
-        config.SYMBOLS,
-        max_positions_per_symbol=2,
-    )
+    reconciliation = reconcile_startup(logger, broker, config.SYMBOLS, max_positions_per_symbol=2)
     execution.set_safe_mode(not reconciliation.ok, reconciliation.reason)
 
     provider.refresh(force=True)
     logger.info(
-        "BULLET started | strategy=%s | dry_run=%s | trading_state=%s | scale_in=%s | scale_in_window=%.2f-%.2f_ATR | scale_in_min_adx=%.1f | campaign_tracking=ENABLED",
-        strategy.name,
-        config.DRY_RUN,
-        "SAFE_MODE" if execution.safe_mode else "NORMAL",
-        "ENABLED" if scale_in.enabled else "DISABLED",
-        scale_in.min_adverse_atr,
-        scale_in.max_adverse_atr,
-        scale_in.min_adx,
+        "BULLET started | strategy=%s | dry_run=%s | trading_state=%s | scale_in=%s | scale_in_window=%.2f-%.2f_ATR | scale_in_min_adx=%.1f | campaign_tracking=ENABLED | campaign_exit=%s | campaign_exit_band=%.2f/%.2f",
+        strategy.name, config.DRY_RUN, "SAFE_MODE" if execution.safe_mode else "NORMAL",
+        "ENABLED" if scale_in.enabled else "DISABLED", scale_in.min_adverse_atr,
+        scale_in.max_adverse_atr, scale_in.min_adx,
+        "ENABLED" if campaign_exit.enabled else "DISABLED",
+        campaign_exit.stop_loss, campaign_exit.profit_target,
     )
     try:
         while True:
-            run_scan(logger, broker, data, strategy, provider, execution, scale_in, campaign)
+            run_scan(logger, broker, data, strategy, provider, execution, scale_in, campaign, campaign_exit)
             time.sleep(config.SCAN_SECONDS)
     except KeyboardInterrupt:
         logger.info("CTRL+C received. Bot stopped by user.")

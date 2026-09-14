@@ -56,7 +56,10 @@ def build_runtime(logger):
         enabled=getattr(config, "SCALE_IN_ENABLED", True),
         max_entries_per_symbol=getattr(config, "SCALE_IN_MAX_ENTRIES_PER_SYMBOL", 2),
         min_adverse_atr=getattr(config, "SCALE_IN_MIN_ADVERSE_ATR", 1.0),
+        max_adverse_atr=getattr(config, "SCALE_IN_MAX_ADVERSE_ATR", 2.0),
         min_adx=getattr(config, "SCALE_IN_MIN_ADX", 20.0),
+        require_h1_direction=getattr(config, "SCALE_IN_REQUIRE_H1_DIRECTION", True),
+        require_m15_alignment=getattr(config, "SCALE_IN_REQUIRE_M15_ALIGNMENT", True),
     )
     return broker, data, strategy, provider, execution, scale_in
 
@@ -106,9 +109,10 @@ def run_scan(logger, broker, data, strategy, calendar_provider, execution, scale
             if result.get("status") == "PASS":
                 ACTIVITY_METRICS[f"qualified_{source}"] += 1
 
-        # P1: a normal strategy signal is not enough to add exposure.  A second
-        # same-symbol entry receives explicit authorization only after live
-        # position state, adverse ATR distance, direction, and ADX are checked.
+        # P1.2: a normal strategy signal is not enough to add exposure. A second
+        # same-symbol entry receives explicit authorization only after live position
+        # state, bounded adverse ATR distance, H1 direction, M15 alignment and ADX
+        # are all checked. Risk/calendar gates remain authoritative at execution.
         if signal.action.value != "HOLD" and not execution.safe_mode:
             positions_ok, owned_positions, position_reason = broker.query_owned_positions()
             if not positions_ok:
@@ -176,12 +180,14 @@ def main():
 
     provider.refresh(force=True)
     logger.info(
-        "BULLET started | strategy=%s | dry_run=%s | trading_state=%s | scale_in=%s | scale_in_trigger=%.2f_ATR",
+        "BULLET started | strategy=%s | dry_run=%s | trading_state=%s | scale_in=%s | scale_in_window=%.2f-%.2f_ATR | scale_in_min_adx=%.1f",
         strategy.name,
         config.DRY_RUN,
         "SAFE_MODE" if execution.safe_mode else "NORMAL",
         "ENABLED" if scale_in.enabled else "DISABLED",
         scale_in.min_adverse_atr,
+        scale_in.max_adverse_atr,
+        scale_in.min_adx,
     )
     try:
         while True:

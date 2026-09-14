@@ -15,6 +15,7 @@ from execution_manager import ExecutionManager
 from logger_setup import setup_logger
 from maximum_hold_manager import MaximumHoldManager, process_entry_unless_expired
 from risk_manager import RiskManager
+from scale_in_manager import ScaleInManager
 from startup_reconciliation import reconcile_startup
 from strategy_diagnostics import diagnose_trend_momentum
 from strategy_framework import strategy_registry
@@ -50,10 +51,17 @@ def build_runtime(logger):
         config.ORDER_COMMENT_ENTRY, config.ALLOW_VOLUME_NORMALIZATION,
         config.TRADE_JOURNAL_PATH,
     )
-    return broker, data, strategy, provider, execution
+    scale_in = ScaleInManager(
+        logger,
+        enabled=getattr(config, "SCALE_IN_ENABLED", True),
+        max_entries_per_symbol=getattr(config, "SCALE_IN_MAX_ENTRIES_PER_SYMBOL", 2),
+        min_adverse_atr=getattr(config, "SCALE_IN_MIN_ADVERSE_ATR", 1.0),
+        min_adx=getattr(config, "SCALE_IN_MIN_ADX", 20.0),
+    )
+    return broker, data, strategy, provider, execution, scale_in
 
 
-def run_scan(logger, broker, data, strategy, calendar_provider, execution):
+def run_scan(logger, broker, data, strategy, calendar_provider, execution, scale_in):
     ACTIVITY_METRICS["scans"] += 1
     snapshots = []
     failed_symbols = []
@@ -90,12 +98,29 @@ def run_scan(logger, broker, data, strategy, calendar_provider, execution):
                 "profit": f"{sum(p.profit for p in positions):.2f}",
             })
             continue
+
         signal = strategy.evaluate(symbol, candles)
         ACTIVITY_METRICS["signals_evaluated"] += 1
         ACTIVITY_METRICS[f"{signal.action.value.lower()}_signals"] += 1
         for source, result in (signal.entry_details or {}).get("module_results", {}).items():
             if result.get("status") == "PASS":
                 ACTIVITY_METRICS[f"qualified_{source}"] += 1
+
+        # P1: a normal strategy signal is not enough to add exposure.  A second
+        # same-symbol entry receives explicit authorization only after live
+        # position state, adverse ATR distance, direction, and ADX are checked.
+        if signal.action.value != "HOLD" and not execution.safe_mode:
+            positions_ok, owned_positions, position_reason = broker.query_owned_positions()
+            if not positions_ok:
+                execution.set_safe_mode(
+                    True,
+                    f"position state unavailable during scale-in evaluation: {position_reason}",
+                )
+            else:
+                signal = scale_in.authorize(signal, owned_positions)
+                if (signal.entry_details or {}).get("scale_in_authorized"):
+                    ACTIVITY_METRICS["scale_in_authorized"] += 1
+
         diagnostics = diagnose_trend_momentum(
             signal,
             candles,
@@ -108,6 +133,8 @@ def run_scan(logger, broker, data, strategy, calendar_provider, execution):
         opened = process_entry_unless_expired(execution, signal, expired_symbols)
         if opened and signal.entry_source:
             ACTIVITY_METRICS[f"trades_opened_{signal.entry_source}"] += 1
+            if (signal.entry_details or {}).get("scale_in_authorized"):
+                ACTIVITY_METRICS["scale_in_opened"] += 1
         decision_kind = (
             "STRATEGY HOLD" if signal.action.value == "HOLD" else "STRATEGY SIGNAL"
         )
@@ -133,7 +160,7 @@ def run_scan(logger, broker, data, strategy, calendar_provider, execution):
 
 def main():
     logger = setup_logger()
-    broker, data, strategy, provider, execution = build_runtime(logger)
+    broker, data, strategy, provider, execution, scale_in = build_runtime(logger)
     if not broker.initialize():
         return
 
@@ -149,14 +176,16 @@ def main():
 
     provider.refresh(force=True)
     logger.info(
-        "BULLET started | strategy=%s | dry_run=%s | trading_state=%s",
+        "BULLET started | strategy=%s | dry_run=%s | trading_state=%s | scale_in=%s | scale_in_trigger=%.2f_ATR",
         strategy.name,
         config.DRY_RUN,
         "SAFE_MODE" if execution.safe_mode else "NORMAL",
+        "ENABLED" if scale_in.enabled else "DISABLED",
+        scale_in.min_adverse_atr,
     )
     try:
         while True:
-            run_scan(logger, broker, data, strategy, provider, execution)
+            run_scan(logger, broker, data, strategy, provider, execution, scale_in)
             time.sleep(config.SCAN_SECONDS)
     except KeyboardInterrupt:
         logger.info("CTRL+C received. Bot stopped by user.")

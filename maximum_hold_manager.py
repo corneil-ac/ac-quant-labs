@@ -4,7 +4,7 @@ import time
 
 
 def process_entry_unless_expired(execution, signal, expired_symbols: set[str]) -> bool:
-    """Prevent a forced-expiration symbol from being reopened in the same scan."""
+    """Prevent a forced-exit symbol from being reopened in the same scan."""
     if signal.symbol in expired_symbols:
         return False
     return execution.process(signal)
@@ -19,16 +19,22 @@ class MaximumHoldManager:
         self.enabled = enabled
         self.max_hold_seconds = max_hold_hours * 60 * 60
 
-    def expire_positions(self, now: float | None = None) -> set[str]:
-        """Close expired positions and return symbols barred from entry this scan."""
+    def expire_positions(self, now: float | None = None, excluded_symbols: set[str] | None = None) -> set[str]:
+        """Close expired positions and return symbols barred from entry this scan.
+
+        P1.2C can exclude symbols whose coordinated campaign exit already fired so
+        ticket-level max-hold logic cannot race the campaign exit in the same scan.
+        """
         if not self.enabled:
             return set()
 
+        excluded = excluded_symbols or set()
         current_time = time.time() if now is None else now
         expired = [
             position
             for position in self.broker.positions()
             if position.magic == self.broker.magic
+            and position.symbol not in excluded
             and current_time - position.time >= self.max_hold_seconds
         ]
 
@@ -48,8 +54,6 @@ class MaximumHoldManager:
                     f"ticket={position.ticket} age={age_hours:.2f}h"
                 )
             else:
-                # Broker emits the single detailed ERROR for the failed order;
-                # keep the scan-level retry signal concise and non-duplicative.
                 self.logger.warning(
                     f"{symbol}: maximum hold close failed | "
                     f"ticket={position.ticket} age={age_hours:.2f}h | retry=next_scan"

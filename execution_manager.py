@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from strategy_framework import SignalAction, StrategySignal
@@ -12,7 +13,7 @@ class ExecutionManager:
 
     def __init__(self, logger, broker, risk_manager, calendar_filter, volume: float,
                  entry_comment: str, allow_volume_normalization: bool = False,
-                 journal_path: str = "data/trade_journal.csv") -> None:
+                 journal_path: str = "data/trade_journal.csv", campaign_manager=None) -> None:
         self.logger = logger
         self.broker = broker
         self.risk = risk_manager
@@ -21,6 +22,7 @@ class ExecutionManager:
         self.entry_comment = entry_comment
         self.allow_volume_normalization = allow_volume_normalization
         self.journal_path = Path(journal_path)
+        self.campaign_manager = campaign_manager
         self._handled_candles: set[tuple[str, object]] = set()
         self._configuration_failures: set[str] = set()
         self.safe_mode = False
@@ -51,8 +53,6 @@ class ExecutionManager:
             return False
         self._handled_candles.add(key)
 
-        # P0 deliberately requires explicit future strategy authorization before
-        # a second same-symbol position can be opened. P1 will supply that flag.
         allow_scale_in = bool((signal.entry_details or {}).get("scale_in_authorized", False))
 
         can_open, reason = self.risk.can_open_symbol(
@@ -85,8 +85,6 @@ class ExecutionManager:
             return False
 
         # Final fail-closed duplicate gate immediately before order submission.
-        # This catches a restart/race/stale in-memory state even if an earlier
-        # risk check passed.
         can_open, reason = self.risk.can_open_symbol(
             signal.symbol,
             allow_additional_position=allow_scale_in,
@@ -110,9 +108,45 @@ class ExecutionManager:
         )
         if not order.ok:
             return False
+
         self.risk.mark_trade_time(signal.symbol)
-        self._journal(signal, validation.normalized, order)
+        journal_signal = self._attach_campaign_snapshot(signal)
+        self._journal(journal_signal, validation.normalized, order)
         return True
+
+    def _attach_campaign_snapshot(self, signal: StrategySignal) -> StrategySignal:
+        if self.campaign_manager is None:
+            return signal
+
+        ok, positions, reason = self.broker.query_owned_positions()
+        if not ok:
+            self.set_safe_mode(True, f"post-entry campaign state unavailable: {reason}")
+            return signal
+
+        snapshot = self.campaign_manager.snapshot(signal.symbol, positions)
+        if snapshot is None:
+            self.logger.warning(
+                "%s: post-entry campaign snapshot unavailable -> no owned position found",
+                signal.symbol,
+            )
+            return signal
+
+        details = dict(signal.entry_details or {})
+        details["campaign_after_entry"] = snapshot.to_dict()
+        self.logger.info(
+            "%s: CAMPAIGN | direction=%s | positions=%s | volume=%.4f | weighted_entry=%.8f | pnl=%.2f | valid=%s",
+            signal.symbol,
+            snapshot.direction,
+            snapshot.position_count,
+            snapshot.total_volume,
+            snapshot.weighted_entry,
+            snapshot.combined_profit,
+            snapshot.valid,
+        )
+        if not snapshot.valid:
+            self.set_safe_mode(True, f"invalid post-entry campaign state: {snapshot.reason}")
+
+        return replace(signal, entry_details=details)
 
     def _journal(self, signal, volume, order) -> None:
         self.journal_path.parent.mkdir(parents=True, exist_ok=True)

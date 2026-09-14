@@ -15,6 +15,7 @@ from execution_manager import ExecutionManager
 from logger_setup import setup_logger
 from maximum_hold_manager import MaximumHoldManager, process_entry_unless_expired
 from risk_manager import RiskManager
+from startup_reconciliation import reconcile_startup
 from strategy_diagnostics import diagnose_trend_momentum
 from strategy_framework import strategy_registry
 import trend_momentum_strategy  # noqa: F401 - registers the configured strategy
@@ -40,7 +41,10 @@ def build_runtime(logger):
         provider, config.CALENDAR_BLACKOUT_MINUTES_BEFORE,
         config.CALENDAR_BLACKOUT_MINUTES_AFTER, config.CALENDAR_BLOCKED_IMPACTS,
     )
-    risk = RiskManager(logger, broker, config.MAX_OPEN_POSITIONS, config.COOLDOWN_MINUTES)
+    risk = RiskManager(
+        logger, broker, config.MAX_OPEN_POSITIONS, config.COOLDOWN_MINUTES,
+        max_positions_per_symbol=2,
+    )
     execution = ExecutionManager(
         logger, broker, risk, calendar, config.FIXED_VOLUME,
         config.ORDER_COMMENT_ENTRY, config.ALLOW_VOLUME_NORMALIZATION,
@@ -55,9 +59,18 @@ def run_scan(logger, broker, data, strategy, calendar_provider, execution):
     failed_symbols = []
     data.begin_scan()
     calendar_provider.refresh()
-    expired_symbols = MaximumHoldManager(
-        logger, broker, config.MAX_HOLD_HOURS, config.ENABLE_MAX_HOLD
-    ).expire_positions()
+
+    if execution.safe_mode:
+        logger.critical(
+            "BULLET SAFE MODE ACTIVE | scan continues | new entries and automatic max-hold closes blocked | reason=%s",
+            execution.safe_mode_reason,
+        )
+        expired_symbols = set()
+    else:
+        expired_symbols = MaximumHoldManager(
+            logger, broker, config.MAX_HOLD_HOURS, config.ENABLE_MAX_HOLD
+        ).expire_positions()
+
     for symbol in config.SYMBOLS:
         candles = {
             "H1": data.get_closed_candles(symbol, TIMEFRAMES["H1"]),
@@ -123,9 +136,24 @@ def main():
     broker, data, strategy, provider, execution = build_runtime(logger)
     if not broker.initialize():
         return
+
     broker.ensure_symbols(config.SYMBOLS)
+
+    reconciliation = reconcile_startup(
+        logger,
+        broker,
+        config.SYMBOLS,
+        max_positions_per_symbol=2,
+    )
+    execution.set_safe_mode(not reconciliation.ok, reconciliation.reason)
+
     provider.refresh(force=True)
-    logger.info(f"BULLET started | strategy={strategy.name} | dry_run={config.DRY_RUN}")
+    logger.info(
+        "BULLET started | strategy=%s | dry_run=%s | trading_state=%s",
+        strategy.name,
+        config.DRY_RUN,
+        "SAFE_MODE" if execution.safe_mode else "NORMAL",
+    )
     try:
         while True:
             run_scan(logger, broker, data, strategy, provider, execution)

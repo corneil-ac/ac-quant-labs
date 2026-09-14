@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import MetaTrader5 as mt5
+import pytest
 
 from scale_in_manager import ScaleInManager
 from strategy_framework import SignalAction, StrategySignal
@@ -46,7 +47,7 @@ def test_authorizes_second_buy_after_adverse_atr_move():
     result = manager.authorize(signal(price=98.8, atr=1.0, adx=30.0), [position(entry=100.0)])
 
     assert result.entry_details["scale_in_authorized"] is True
-    assert result.entry_details["scale_in_adverse_atr"] == 1.2
+    assert result.entry_details["scale_in_adverse_atr"] == pytest.approx(1.2)
     assert result.entry_details["scale_in_position_count_before"] == 1
     assert "scale-in authorized" in result.reason
 

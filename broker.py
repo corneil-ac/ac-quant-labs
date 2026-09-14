@@ -38,8 +38,6 @@ class Broker:
         self.magic = magic
         self.deviation = deviation
         self.dry_run = dry_run
-        # A successful fill is better evidence than sometimes-inaccurate symbol
-        # metadata.  This cache deliberately lasts only for this Broker runtime.
         self._successful_filling_modes: dict[str, int] = {}
 
     def initialize(self) -> bool:
@@ -81,7 +79,6 @@ class Broker:
     def validate_volume(
         self, symbol: str, requested: float, allow_normalization: bool = False
     ) -> VolumeValidation:
-        """Validate a requested volume against the symbol's live MT5 contract."""
         selected = mt5.symbol_select(symbol, True)
         info = mt5.symbol_info(symbol)
         if not selected or info is None:
@@ -139,11 +136,20 @@ class Broker:
     def account_info(self):
         return mt5.account_info()
 
-    def positions(self):
+    def query_owned_positions(self):
+        """Return (ok, BULLET-owned positions, reason) without hiding MT5 query failures."""
         positions = mt5.positions_get()
         if positions is None:
+            error = mt5.last_error()
+            return False, [], f"mt5.positions_get() failed: {error}"
+        return True, [p for p in positions if p.magic == self.magic], "ok"
+
+    def positions(self):
+        ok, positions, reason = self.query_owned_positions()
+        if not ok:
+            self.logger.error("BULLET position query unavailable | %s", reason)
             return []
-        return [p for p in positions if p.magic == self.magic]
+        return positions
 
     def positions_for_symbols(self, symbols: set[str]):
         return [p for p in self.positions() if p.symbol in symbols]
@@ -162,7 +168,6 @@ class Broker:
 
     @staticmethod
     def classify_rejection(retcode: Optional[int], comment: str = "") -> str:
-        """Return a stable, operational classification for an MT5 rejection."""
         groups = (
             ("UNSUPPORTED_FILLING_MODE", ("TRADE_RETCODE_INVALID_FILL",), (10030,)),
             ("NO_PRICES", ("TRADE_RETCODE_PRICE_OFF",), (10021,)),
@@ -179,7 +184,6 @@ class Broker:
             if retcode in values - {None} or retcode in standard_values:
                 return classification
 
-        # Some gateways provide useful text with a missing/nonstandard retcode.
         normalized = (comment or "").lower()
         if "unsupported filling" in normalized:
             return "UNSUPPORTED_FILLING_MODE"
@@ -190,7 +194,6 @@ class Broker:
         return "OTHER_MT5_REJECTION"
 
     def filling_candidates(self, symbol: str, info=None):
-        """Build a deterministic, capability-aware list of (mode, source)."""
         info = info if info is not None else mt5.symbol_info(symbol)
         modes = {
             "FOK": getattr(mt5, "ORDER_FILLING_FOK", 0),
@@ -206,8 +209,6 @@ class Broker:
         fok_flag = getattr(mt5, "SYMBOL_FILLING_FOK", 1)
         ioc_flag = getattr(mt5, "SYMBOL_FILLING_IOC", 2)
         if filling_flags is not None:
-            # Modern MT5 exposes a flag mask.  A zero value is also accepted for
-            # compatibility with APIs/brokers exposing ORDER_FILLING_FOK itself.
             if filling_flags == modes["FOK"] or filling_flags & fok_flag:
                 candidates.append((modes["FOK"], "capability"))
             if filling_flags & ioc_flag:
@@ -218,8 +219,6 @@ class Broker:
         if execution != market_execution:
             candidates.append((modes["RETURN"], "capability"))
 
-        # Metadata is advisory.  Deterministic fallback probes the other modes,
-        # except RETURN where MT5 explicitly prohibits it for Market Execution.
         for mode in (modes["IOC"], modes["FOK"]):
             candidates.append((mode, "fallback"))
         if execution != market_execution:

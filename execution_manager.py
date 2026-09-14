@@ -23,24 +23,53 @@ class ExecutionManager:
         self.journal_path = Path(journal_path)
         self._handled_candles: set[tuple[str, object]] = set()
         self._configuration_failures: set[str] = set()
+        self.safe_mode = False
+        self.safe_mode_reason = ""
+
+    def set_safe_mode(self, enabled: bool, reason: str = "") -> None:
+        self.safe_mode = enabled
+        self.safe_mode_reason = reason if enabled else ""
+        if enabled:
+            self.logger.critical("BULLET SAFE MODE ENABLED | new entries blocked | reason=%s", reason)
+        else:
+            self.logger.info("BULLET SAFE MODE CLEARED | new entries enabled")
 
     def process(self, signal: StrategySignal) -> bool:
         if signal.action is SignalAction.HOLD or signal.symbol in self._configuration_failures:
             return False
+
+        if self.safe_mode:
+            self.logger.warning(
+                "%s: entry blocked by SAFE MODE | reason=%s",
+                signal.symbol, self.safe_mode_reason,
+            )
+            return False
+
         key = (signal.symbol, signal.signal_candle_timestamp)
         if key in self._handled_candles:
             self.logger.info(f"{signal.symbol}: duplicate signal candle suppressed")
             return False
         self._handled_candles.add(key)
 
-        can_open, reason = self.risk.can_open_symbol(signal.symbol)
+        # P0 deliberately requires explicit future strategy authorization before
+        # a second same-symbol position can be opened. P1 will supply that flag.
+        allow_scale_in = bool((signal.entry_details or {}).get("scale_in_authorized", False))
+
+        can_open, reason = self.risk.can_open_symbol(
+            signal.symbol,
+            allow_additional_position=allow_scale_in,
+        )
         if not can_open:
+            if reason.startswith("position state unavailable:"):
+                self.set_safe_mode(True, reason)
             self.logger.info(f"{signal.symbol}: entry skipped -> {reason}")
             return False
+
         calendar_ok, reason = self.calendar_filter.can_open_symbol(signal.symbol)
         if not calendar_ok:
             self.logger.info(f"{signal.symbol}: entry blocked -> {reason}")
             return False
+
         validation = self.broker.validate_volume(
             signal.symbol, self.volume, self.allow_volume_normalization
         )
@@ -55,10 +84,23 @@ class ExecutionManager:
             self.logger.error(f"{signal.symbol}: entry rejected -> {validation.reason}")
             return False
 
+        # Final fail-closed duplicate gate immediately before order submission.
+        # This catches a restart/race/stale in-memory state even if an earlier
+        # risk check passed.
+        can_open, reason = self.risk.can_open_symbol(
+            signal.symbol,
+            allow_additional_position=allow_scale_in,
+        )
+        if not can_open:
+            if reason.startswith("position state unavailable:"):
+                self.set_safe_mode(True, reason)
+            self.logger.warning(f"{signal.symbol}: final entry gate blocked -> {reason}")
+            return False
+
         self.logger.info(
-            "%s: ENTRY %s | strategy=%s | source=%s | reason=%s | details=%s",
+            "%s: ENTRY %s | strategy=%s | source=%s | scale_in_authorized=%s | reason=%s | details=%s",
             signal.symbol, signal.action.value, signal.strategy_name,
-            signal.entry_source or "UNSPECIFIED",
+            signal.entry_source or "UNSPECIFIED", allow_scale_in,
             signal.entry_reason or signal.reason, signal.entry_details or {},
         )
 
@@ -75,8 +117,6 @@ class ExecutionManager:
     def _journal(self, signal, volume, order) -> None:
         self.journal_path.parent.mkdir(parents=True, exist_ok=True)
         exists = self.journal_path.exists()
-        # Upgrade the original nine-column CSV in place so historical rows
-        # remain readable and every new row can carry AQL-0044 attribution.
         if exists:
             with self.journal_path.open(newline="", encoding="utf-8") as handle:
                 rows = list(csv.reader(handle))

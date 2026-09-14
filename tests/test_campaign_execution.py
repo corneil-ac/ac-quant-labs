@@ -1,7 +1,10 @@
+import csv
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import MetaTrader5 as mt5
+import pytest
 
 from campaign_manager import CampaignManager
 from execution_manager import ExecutionManager
@@ -104,8 +107,18 @@ def test_successful_scale_in_journals_campaign_snapshot(tmp_path):
     )
 
     assert execution.process(signal) is True
-    text = journal.read_text(encoding="utf-8")
-    assert '"campaign_after_entry"' in text
-    assert '"position_count": 2' in text
-    assert '"total_volume": 0.06' in text
-    assert '"weighted_entry": 1.1694' in text
+
+    # Parse the journal through the same CSV/JSON layers a consumer would use.
+    # Raw CSV text escapes embedded JSON quotes by doubling them, so substring
+    # matching against the serialized file is brittle and does not validate the
+    # actual stored structure.
+    with journal.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert len(rows) == 1
+    details = json.loads(rows[0]["entry_details"])
+    campaign = details["campaign_after_entry"]
+
+    assert campaign["position_count"] == 2
+    assert campaign["total_volume"] == pytest.approx(0.06)
+    assert campaign["weighted_entry"] == pytest.approx(1.1694)

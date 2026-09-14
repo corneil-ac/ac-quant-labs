@@ -9,6 +9,7 @@ import config
 from broker import Broker
 from calendar_filter import CalendarFilter
 from calendar_provider import CalendarProvider
+from campaign_manager import CampaignManager
 from dashboard import show_dashboard
 from data_manager import DataManager
 from execution_manager import ExecutionManager
@@ -46,10 +47,11 @@ def build_runtime(logger):
         logger, broker, config.MAX_OPEN_POSITIONS, config.COOLDOWN_MINUTES,
         max_positions_per_symbol=2,
     )
+    campaign = CampaignManager(logger)
     execution = ExecutionManager(
         logger, broker, risk, calendar, config.FIXED_VOLUME,
         config.ORDER_COMMENT_ENTRY, config.ALLOW_VOLUME_NORMALIZATION,
-        config.TRADE_JOURNAL_PATH,
+        config.TRADE_JOURNAL_PATH, campaign_manager=campaign,
     )
     scale_in = ScaleInManager(
         logger,
@@ -61,10 +63,10 @@ def build_runtime(logger):
         require_h1_direction=getattr(config, "SCALE_IN_REQUIRE_H1_DIRECTION", True),
         require_m15_alignment=getattr(config, "SCALE_IN_REQUIRE_M15_ALIGNMENT", True),
     )
-    return broker, data, strategy, provider, execution, scale_in
+    return broker, data, strategy, provider, execution, scale_in, campaign
 
 
-def run_scan(logger, broker, data, strategy, calendar_provider, execution, scale_in):
+def run_scan(logger, broker, data, strategy, calendar_provider, execution, scale_in, campaign):
     ACTIVITY_METRICS["scans"] += 1
     snapshots = []
     failed_symbols = []
@@ -109,10 +111,6 @@ def run_scan(logger, broker, data, strategy, calendar_provider, execution, scale
             if result.get("status") == "PASS":
                 ACTIVITY_METRICS[f"qualified_{source}"] += 1
 
-        # P1.2: a normal strategy signal is not enough to add exposure. A second
-        # same-symbol entry receives explicit authorization only after live position
-        # state, bounded adverse ATR distance, H1 direction, M15 alignment and ADX
-        # are all checked. Risk/calendar gates remain authoritative at execution.
         if signal.action.value != "HOLD" and not execution.safe_mode:
             positions_ok, owned_positions, position_reason = broker.query_owned_positions()
             if not positions_ok:
@@ -148,6 +146,19 @@ def run_scan(logger, broker, data, strategy, calendar_provider, execution, scale
             f"reason={diagnostics.reason} | submitted={opened}"
         )
         positions = [p for p in broker.positions() if p.symbol == symbol]
+        campaign_snapshot = campaign.snapshot(symbol, positions)
+        if campaign_snapshot is not None:
+            ACTIVITY_METRICS["campaign_snapshots"] += 1
+            logger.info(
+                "%s: CAMPAIGN SNAPSHOT | direction=%s | positions=%s | volume=%.4f | weighted_entry=%.8f | pnl=%.2f | valid=%s",
+                symbol,
+                campaign_snapshot.direction,
+                campaign_snapshot.position_count,
+                campaign_snapshot.total_volume,
+                campaign_snapshot.weighted_entry,
+                campaign_snapshot.combined_profit,
+                campaign_snapshot.valid,
+            )
         snapshots.append({
             "symbol": symbol, "signal": signal.action.value,
             "open": len(positions), "profit": f"{sum(p.profit for p in positions):.2f}",
@@ -164,7 +175,7 @@ def run_scan(logger, broker, data, strategy, calendar_provider, execution, scale
 
 def main():
     logger = setup_logger()
-    broker, data, strategy, provider, execution, scale_in = build_runtime(logger)
+    broker, data, strategy, provider, execution, scale_in, campaign = build_runtime(logger)
     if not broker.initialize():
         return
 
@@ -180,7 +191,7 @@ def main():
 
     provider.refresh(force=True)
     logger.info(
-        "BULLET started | strategy=%s | dry_run=%s | trading_state=%s | scale_in=%s | scale_in_window=%.2f-%.2f_ATR | scale_in_min_adx=%.1f",
+        "BULLET started | strategy=%s | dry_run=%s | trading_state=%s | scale_in=%s | scale_in_window=%.2f-%.2f_ATR | scale_in_min_adx=%.1f | campaign_tracking=ENABLED",
         strategy.name,
         config.DRY_RUN,
         "SAFE_MODE" if execution.safe_mode else "NORMAL",
@@ -191,7 +202,7 @@ def main():
     )
     try:
         while True:
-            run_scan(logger, broker, data, strategy, provider, execution, scale_in)
+            run_scan(logger, broker, data, strategy, provider, execution, scale_in, campaign)
             time.sleep(config.SCAN_SECONDS)
     except KeyboardInterrupt:
         logger.info("CTRL+C received. Bot stopped by user.")

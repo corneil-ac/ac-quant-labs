@@ -48,7 +48,7 @@ def build_runtime(logger):
     execution = ExecutionManager(
         logger, broker, risk, calendar, config.FIXED_VOLUME,
         config.ORDER_COMMENT_ENTRY, config.ALLOW_VOLUME_NORMALIZATION,
-        config.TRADE_JOURNAL_PATH,
+        config.TRADE_JOURNAL_PATH, config.ENABLE_STOP_LOSS,
     )
     return broker, data, strategy, provider, execution
 
@@ -149,9 +149,10 @@ def main():
 
     provider.refresh(force=True)
     logger.info(
-        "BULLET started | strategy=%s | dry_run=%s | trading_state=%s",
+        "BULLET started | strategy=%s | dry_run=%s | stop_loss_enabled=%s | trading_state=%s",
         strategy.name,
         config.DRY_RUN,
+        config.ENABLE_STOP_LOSS,
         "SAFE_MODE" if execution.safe_mode else "NORMAL",
     )
     try:

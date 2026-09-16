@@ -16,13 +16,18 @@ DATA_FEED_OUTAGE_THRESHOLD = len(SYMBOLS)
 ENABLE_MAX_HOLD = True
 MAX_HOLD_HOURS = 2.0
 
-MAX_OPEN_POSITIONS = 2
+MAX_OPEN_POSITIONS = 4
 COOLDOWN_MINUTES = 15
 DRY_RUN = False
 MAGIC = 300040
 DEVIATION = 10
 ORDER_COMMENT_ENTRY = "bullet_trend_momentum"
 TRADE_JOURNAL_PATH = "data/trade_journal.csv"
+
+# AQL-0047: temporary no-stop-loss observation mode. The strategy continues to
+# calculate its theoretical ATR stop for diagnostics and later comparison, but
+# ExecutionManager omits SL from the MT5 order while this flag is False.
+ENABLE_STOP_LOSS = False
 
 # AQL-0044 multi-entry engine.  Thresholds are deliberately moderately
 # permissive for demo observation, while every module still sits behind the H1

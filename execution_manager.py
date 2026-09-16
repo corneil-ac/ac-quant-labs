@@ -12,7 +12,8 @@ class ExecutionManager:
 
     def __init__(self, logger, broker, risk_manager, calendar_filter, volume: float,
                  entry_comment: str, allow_volume_normalization: bool = False,
-                 journal_path: str = "data/trade_journal.csv") -> None:
+                 journal_path: str = "data/trade_journal.csv",
+                 enable_stop_loss: bool = True) -> None:
         self.logger = logger
         self.broker = broker
         self.risk = risk_manager
@@ -21,6 +22,7 @@ class ExecutionManager:
         self.entry_comment = entry_comment
         self.allow_volume_normalization = allow_volume_normalization
         self.journal_path = Path(journal_path)
+        self.enable_stop_loss = enable_stop_loss
         self._handled_candles: set[tuple[str, object]] = set()
         self._configuration_failures: set[str] = set()
         self.safe_mode = False
@@ -97,16 +99,18 @@ class ExecutionManager:
             self.logger.warning(f"{signal.symbol}: final entry gate blocked -> {reason}")
             return False
 
+        submitted_stop = signal.stop_loss if self.enable_stop_loss else None
         self.logger.info(
-            "%s: ENTRY %s | strategy=%s | source=%s | scale_in_authorized=%s | reason=%s | details=%s",
+            "%s: ENTRY %s | strategy=%s | source=%s | scale_in_authorized=%s | stop_loss_enabled=%s | theoretical_stop=%s | submitted_stop=%s | reason=%s | details=%s",
             signal.symbol, signal.action.value, signal.strategy_name,
             signal.entry_source or "UNSPECIFIED", allow_scale_in,
+            self.enable_stop_loss, signal.stop_loss, submitted_stop,
             signal.entry_reason or signal.reason, signal.entry_details or {},
         )
 
         order = (self.broker.buy if signal.action is SignalAction.BUY else self.broker.sell)(
             signal.symbol, validation.normalized, comment=self.entry_comment,
-            stop_loss=signal.stop_loss, take_profit=signal.take_profit,
+            stop_loss=submitted_stop, take_profit=signal.take_profit,
         )
         if not order.ok:
             return False

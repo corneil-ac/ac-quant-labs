@@ -31,6 +31,8 @@ class StrategySignal:
     entry_source: str | None = None
     entry_reason: str | None = None
     entry_details: Mapping[str, Any] | None = None
+    market_regime: str | None = None
+    regime_details: Mapping[str, Any] | None = None
 
 
 class TradingStrategy(ABC):

@@ -7,6 +7,7 @@ from typing import Any, Mapping
 import pandas as pd
 
 import config
+from regime_detector import RegimeDetector
 from strategy_framework import SignalAction, StrategySignal, TradingStrategy, strategy_registry
 
 
@@ -44,6 +45,11 @@ class TrendMomentumStrategy(TradingStrategy):
         if self.pullback_lookback < 1:
             raise ValueError("pullback_lookback must be at least 1")
         self.entry_priority = tuple(entry_priority or config.ENTRY_PRIORITY)
+        self.regime_detector = RegimeDetector(
+            atr_period=self.atr_period,
+            fast_ema=self.fast_ema_period,
+            slow_ema=self.slow_ema_period,
+        )
 
     @staticmethod
     def _rsi(close: pd.Series, period: int = 14) -> pd.Series:
@@ -72,10 +78,13 @@ class TrendMomentumStrategy(TradingStrategy):
     def evaluate(self, symbol: str, candles: Mapping[str, pd.DataFrame]) -> StrategySignal:
         h1, m15 = candles.get("H1", pd.DataFrame()).copy(), candles.get("M15", pd.DataFrame()).copy()
         required = {"time", "open", "high", "low", "close"}
+        regime = self.regime_detector.classify(m15)
+        regime_details = {**dict(regime.metrics), "reason": regime.reason}
         if (not required.issubset(h1.columns) or not required.issubset(m15.columns)
                 or len(h1) < self.trend_ema_period
                 or len(m15) < max(self.slow_ema_period, self.atr_period + 1)):
-            return self._hold(symbol, None, "insufficient closed candle data")
+            return self._hold(symbol, None, "insufficient closed candle data",
+                              market_regime=regime.regime.value, regime_details=regime_details)
 
         h1_ema = h1["close"].ewm(span=self.trend_ema_period, adjust=False).mean()
         fast = m15["close"].ewm(span=self.fast_ema_period, adjust=False).mean()
@@ -89,7 +98,8 @@ class TrendMomentumStrategy(TradingStrategy):
                      if isinstance(candle["time"], Real) else pd.to_datetime(candle["time"], utc=True))
         close, open_, atr = float(candle["close"]), float(candle["open"]), float(atr_series.iloc[-1])
         if pd.isna(atr) or atr <= 0:
-            return self._hold(symbol, timestamp, "ATR unavailable")
+            return self._hold(symbol, timestamp, "ATR unavailable",
+                              market_regime=regime.regime.value, regime_details=regime_details)
 
         h1_direction = (SignalAction.BUY if float(trend["close"]) > float(h1_ema.iloc[-1])
                         else SignalAction.SELL if float(trend["close"]) < float(h1_ema.iloc[-1]) else None)
@@ -99,7 +109,8 @@ class TrendMomentumStrategy(TradingStrategy):
                                      or (h1_direction is SignalAction.SELL and sell_aligned)) else None
         if direction is None:
             return self._hold(symbol, timestamp, "H1 trend and M15 direction are not aligned",
-                              common={"h1_direction": getattr(h1_direction, "value", "NEUTRAL"), "m15_aligned": False})
+                              common={"h1_direction": getattr(h1_direction, "value", "NEUTRAL"), "m15_aligned": False},
+                              market_regime=regime.regime.value, regime_details=regime_details)
 
         bullish = close > open_
         confirmation = bullish if direction is SignalAction.BUY else close < open_
@@ -120,12 +131,14 @@ class TrendMomentumStrategy(TradingStrategy):
                          if results.get(name, {}).get("status") == "PASS"), None)
         details = {**metrics, "module_results": results}
         if selected is None:
-            return self._hold(symbol, timestamp, "no enabled entry module qualified", details)
+            return self._hold(symbol, timestamp, "no enabled entry module qualified", details,
+                              market_regime=regime.regime.value, regime_details=regime_details)
         reason = results[selected]["reason"]
         distance = self.stop_atr_multiple * atr
         stop, target = close - side * distance, close + side * distance * self.reward_to_risk
         return StrategySignal(symbol, direction, timestamp, close, stop, target, self.name,
-                              self.timeframe, reason, selected, reason, details)
+                              self.timeframe, reason, selected, reason, details,
+                              regime.regime.value, regime_details)
 
     def _evaluate_module(self, name, cfg, m15, fast, atr_series, direction,
                          confirmation, rsi, adx) -> tuple[bool, str]:
@@ -159,14 +172,16 @@ class TrendMomentumStrategy(TradingStrategy):
             return ok, f"strong trend: ADX {adx:.1f}, sustained EMA20 location and slope" if ok else "strong-trend ADX, slope, momentum, or persistence insufficient"
         return False, "unknown entry module"
 
-    def _hold(self, symbol, timestamp, reason: str, common=None) -> StrategySignal:
+    def _hold(self, symbol, timestamp, reason: str, common=None,
+              market_regime: str | None = None, regime_details=None) -> StrategySignal:
         details = common or {}
         if "module_results" not in details:
             details = {**details, "module_results": {
                 name: {"status": "DISABLED" if not cfg.get("enabled", True) else "FAIL", "reason": reason}
                 for name, cfg in self.multi_entry_config.items()}}
         return StrategySignal(symbol, SignalAction.HOLD, timestamp, None, None, None,
-                              self.name, self.timeframe, reason, None, reason, details)
+                              self.name, self.timeframe, reason, None, reason, details,
+                              market_regime, regime_details)
 
 
 def side_sign(direction: SignalAction) -> int:

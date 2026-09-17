@@ -93,6 +93,15 @@ def run_scan(logger, broker, data, strategy, calendar_provider, execution):
         signal = strategy.evaluate(symbol, candles)
         ACTIVITY_METRICS["signals_evaluated"] += 1
         ACTIVITY_METRICS[f"{signal.action.value.lower()}_signals"] += 1
+        if signal.market_regime:
+            ACTIVITY_METRICS[f"regime_{signal.market_regime}"] += 1
+            logger.info(
+                "%s: MARKET REGIME | regime=%s | reason=%s | metrics=%s",
+                symbol,
+                signal.market_regime,
+                (signal.regime_details or {}).get("reason", ""),
+                {k: v for k, v in (signal.regime_details or {}).items() if k != "reason"},
+            )
         for source, result in (signal.entry_details or {}).get("module_results", {}).items():
             if result.get("status") == "PASS":
                 ACTIVITY_METRICS[f"qualified_{source}"] += 1
@@ -113,6 +122,7 @@ def run_scan(logger, broker, data, strategy, calendar_provider, execution):
         )
         logger.info(
             f"{symbol}: {decision_kind} ({signal.action.value}) | "
+            f"regime={signal.market_regime or 'UNAVAILABLE'} | "
             f"candle={signal.signal_candle_timestamp} | "
             f"reason={diagnostics.reason} | submitted={opened}"
         )

@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import time
 from collections import Counter
-
 import MetaTrader5 as mt5
-
 import config
 from broker import Broker
 from calendar_filter import CalendarFilter
@@ -18,162 +16,61 @@ from risk_manager import RiskManager
 from startup_reconciliation import reconcile_startup
 from strategy_diagnostics import diagnose_trend_momentum
 from strategy_framework import strategy_registry
-import trend_momentum_strategy  # noqa: F401 - registers the configured strategy
-
+import trend_momentum_strategy  # noqa: F401
 
 TIMEFRAMES = {"M15": mt5.TIMEFRAME_M15, "H1": mt5.TIMEFRAME_H1}
 ACTIVITY_METRICS = Counter()
 
-
 def build_runtime(logger):
-    broker = Broker(logger, config.MAGIC, config.DEVIATION, config.DRY_RUN)
-    data = DataManager(
-        logger, TIMEFRAMES["M15"], config.HISTORY_BARS,
-        config.DATA_FETCH_RETRIES, config.DATA_FETCH_RETRY_SECONDS,
-        config.MT5_RECOVERY_WAIT_SECONDS,
-    )
-    strategy = strategy_registry.create(config.ACTIVE_STRATEGY)
-    provider = CalendarProvider(
-        logger, config.CALENDAR_URL, config.CALENDAR_CACHE_PATH,
-        config.CALENDAR_REFRESH_HOURS,
-    )
-    calendar = CalendarFilter(
-        provider, config.CALENDAR_BLACKOUT_MINUTES_BEFORE,
-        config.CALENDAR_BLACKOUT_MINUTES_AFTER, config.CALENDAR_BLOCKED_IMPACTS,
-    )
-    risk = RiskManager(
-        logger, broker, config.MAX_OPEN_POSITIONS, config.COOLDOWN_MINUTES,
-        max_positions_per_symbol=2,
-    )
-    execution = ExecutionManager(
-        logger, broker, risk, calendar, config.FIXED_VOLUME,
-        config.ORDER_COMMENT_ENTRY, config.ALLOW_VOLUME_NORMALIZATION,
-        config.TRADE_JOURNAL_PATH, config.ENABLE_STOP_LOSS,
-    )
-    return broker, data, strategy, provider, execution
+    broker=Broker(logger,config.MAGIC,config.DEVIATION,config.DRY_RUN)
+    data=DataManager(logger,TIMEFRAMES["M15"],config.HISTORY_BARS,config.DATA_FETCH_RETRIES,config.DATA_FETCH_RETRY_SECONDS,config.MT5_RECOVERY_WAIT_SECONDS)
+    strategy=strategy_registry.create(config.ACTIVE_STRATEGY)
+    provider=CalendarProvider(logger,config.CALENDAR_URL,config.CALENDAR_CACHE_PATH,config.CALENDAR_REFRESH_HOURS)
+    calendar=CalendarFilter(provider,config.CALENDAR_BLACKOUT_MINUTES_BEFORE,config.CALENDAR_BLACKOUT_MINUTES_AFTER,config.CALENDAR_BLOCKED_IMPACTS)
+    risk=RiskManager(logger,broker,config.MAX_OPEN_POSITIONS,config.COOLDOWN_MINUTES,max_positions_per_symbol=2)
+    execution=ExecutionManager(logger,broker,risk,calendar,config.FIXED_VOLUME,config.ORDER_COMMENT_ENTRY,config.ALLOW_VOLUME_NORMALIZATION,config.TRADE_JOURNAL_PATH,config.ENABLE_STOP_LOSS)
+    return broker,data,strategy,provider,execution
 
-
-def run_scan(logger, broker, data, strategy, calendar_provider, execution):
-    ACTIVITY_METRICS["scans"] += 1
-    snapshots = []
-    failed_symbols = []
-    data.begin_scan()
-    calendar_provider.refresh()
-
+def run_scan(logger,broker,data,strategy,calendar_provider,execution):
+    ACTIVITY_METRICS["scans"]+=1; snapshots=[]; failed_symbols=[]; data.begin_scan(); calendar_provider.refresh()
     if execution.safe_mode:
-        logger.critical(
-            "BULLET SAFE MODE ACTIVE | scan continues | new entries and automatic max-hold closes blocked | reason=%s",
-            execution.safe_mode_reason,
-        )
-        expired_symbols = set()
+        logger.critical("BULLET SAFE MODE ACTIVE | scan continues | new entries and automatic max-hold closes blocked | reason=%s",execution.safe_mode_reason); expired_symbols=set()
     else:
-        expired_symbols = MaximumHoldManager(
-            logger, broker, config.MAX_HOLD_HOURS, config.ENABLE_MAX_HOLD
-        ).expire_positions()
-
+        expired_symbols=MaximumHoldManager(logger,broker,config.MAX_HOLD_HOURS,config.ENABLE_MAX_HOLD).expire_positions()
     for symbol in config.SYMBOLS:
-        candles = {
-            "H1": data.get_closed_candles(symbol, TIMEFRAMES["H1"]),
-            "M15": data.get_closed_candles(symbol, TIMEFRAMES["M15"]),
-        }
+        candles={"H1":data.get_closed_candles(symbol,TIMEFRAMES["H1"]),"M15":data.get_closed_candles(symbol,TIMEFRAMES["M15"])}
         if any(frame.empty for frame in candles.values()):
-            failed_symbols.append(symbol)
-            logger.error(
-                "%s: DATA UNAVAILABLE / DATA FEED FAILURE | no strategy "
-                "decision or order submission",
-                symbol,
-            )
-            positions = [p for p in broker.positions() if p.symbol == symbol]
-            snapshots.append({
-                "symbol": symbol, "signal": "DATA_UNAVAILABLE",
-                "open": len(positions),
-                "profit": f"{sum(p.profit for p in positions):.2f}",
-            })
-            continue
-        signal = strategy.evaluate(symbol, candles)
-        ACTIVITY_METRICS["signals_evaluated"] += 1
-        ACTIVITY_METRICS[f"{signal.action.value.lower()}_signals"] += 1
+            failed_symbols.append(symbol); logger.error("%s: DATA UNAVAILABLE / DATA FEED FAILURE | no strategy decision or order submission",symbol)
+            positions=[p for p in broker.positions() if p.symbol==symbol]; snapshots.append({"symbol":symbol,"signal":"DATA_UNAVAILABLE","open":len(positions),"profit":f"{sum(p.profit for p in positions):.2f}"}); continue
+        signal=strategy.evaluate(symbol,candles); ACTIVITY_METRICS["signals_evaluated"]+=1; ACTIVITY_METRICS[f"{signal.action.value.lower()}_signals"]+=1
         if signal.market_regime:
-            ACTIVITY_METRICS[f"regime_{signal.market_regime}"] += 1
-            logger.info(
-                "%s: MARKET REGIME | regime=%s | reason=%s | metrics=%s",
-                symbol,
-                signal.market_regime,
-                (signal.regime_details or {}).get("reason", ""),
-                {k: v for k, v in (signal.regime_details or {}).items() if k != "reason"},
-            )
-        for source, result in (signal.entry_details or {}).get("module_results", {}).items():
-            if result.get("status") == "PASS":
-                ACTIVITY_METRICS[f"qualified_{source}"] += 1
-        diagnostics = diagnose_trend_momentum(
-            signal,
-            candles,
-            strategy.trend_ema_period,
-            strategy.fast_ema_period,
-            strategy.slow_ema_period,
-            strategy.atr_period,
-        )
-        logger.info("\n%s", diagnostics.format())
-        opened = process_entry_unless_expired(execution, signal, expired_symbols)
-        if opened and signal.entry_source:
-            ACTIVITY_METRICS[f"trades_opened_{signal.entry_source}"] += 1
-        decision_kind = (
-            "STRATEGY HOLD" if signal.action.value == "HOLD" else "STRATEGY SIGNAL"
-        )
-        logger.info(
-            f"{symbol}: {decision_kind} ({signal.action.value}) | "
-            f"regime={signal.market_regime or 'UNAVAILABLE'} | "
-            f"candle={signal.signal_candle_timestamp} | "
-            f"reason={diagnostics.reason} | submitted={opened}"
-        )
-        positions = [p for p in broker.positions() if p.symbol == symbol]
-        snapshots.append({
-            "symbol": symbol, "signal": signal.action.value,
-            "open": len(positions), "profit": f"{sum(p.profit for p in positions):.2f}",
-        })
-    threshold = max(1, min(config.DATA_FEED_OUTAGE_THRESHOLD, len(config.SYMBOLS)))
-    if len(failed_symbols) >= threshold:
-        logger.critical(
-            "PROBABLE MT5/DATA-FEED OUTAGE | failed_symbols=%s/%s | symbols=%s",
-            len(failed_symbols), len(config.SYMBOLS), ",".join(failed_symbols),
-        )
-    logger.info("AQL-0044 activity metrics | %s", dict(sorted(ACTIVITY_METRICS.items())))
-    show_dashboard(logger, broker, snapshots)
-
+            ACTIVITY_METRICS[f"regime_{signal.market_regime}"]+=1
+            logger.info("%s: MARKET REGIME | regime=%s | reason=%s | metrics=%s",symbol,signal.market_regime,(signal.regime_details or {}).get("reason",""),{k:v for k,v in (signal.regime_details or {}).items() if k!="reason"})
+        if signal.quality_score is not None:
+            ACTIVITY_METRICS["quality_scored_signals"]+=1
+            logger.info("%s: TRADE QUALITY | score=%.2f | source=%s | components=%s | gating=%s",symbol,signal.quality_score,signal.entry_source,(signal.quality_details or {}).get("components",{}),config.ENABLE_TRADE_QUALITY_GATING)
+        for source,result in (signal.entry_details or {}).get("module_results",{}).items():
+            if result.get("status")=="PASS": ACTIVITY_METRICS[f"qualified_{source}"]+=1
+        diagnostics=diagnose_trend_momentum(signal,candles,strategy.trend_ema_period,strategy.fast_ema_period,strategy.slow_ema_period,strategy.atr_period); logger.info("\n%s",diagnostics.format())
+        opened=process_entry_unless_expired(execution,signal,expired_symbols)
+        if opened and signal.entry_source: ACTIVITY_METRICS[f"trades_opened_{signal.entry_source}"]+=1
+        decision_kind="STRATEGY HOLD" if signal.action.value=="HOLD" else "STRATEGY SIGNAL"
+        logger.info("%s: %s (%s) | regime=%s | quality=%s | candle=%s | reason=%s | submitted=%s",symbol,decision_kind,signal.action.value,signal.market_regime or "UNAVAILABLE",f"{signal.quality_score:.2f}" if signal.quality_score is not None else "UNSCORED",signal.signal_candle_timestamp,diagnostics.reason,opened)
+        positions=[p for p in broker.positions() if p.symbol==symbol]; snapshots.append({"symbol":symbol,"signal":signal.action.value,"open":len(positions),"profit":f"{sum(p.profit for p in positions):.2f}"})
+    threshold=max(1,min(config.DATA_FEED_OUTAGE_THRESHOLD,len(config.SYMBOLS)))
+    if len(failed_symbols)>=threshold: logger.critical("PROBABLE MT5/DATA-FEED OUTAGE | failed_symbols=%s/%s | symbols=%s",len(failed_symbols),len(config.SYMBOLS),",".join(failed_symbols))
+    logger.info("BULLET activity metrics | %s",dict(sorted(ACTIVITY_METRICS.items()))); show_dashboard(logger,broker,snapshots)
 
 def main():
-    logger = setup_logger()
-    broker, data, strategy, provider, execution = build_runtime(logger)
-    if not broker.initialize():
-        return
-
+    logger=setup_logger(); broker,data,strategy,provider,execution=build_runtime(logger)
+    if not broker.initialize(): return
     broker.ensure_symbols(config.SYMBOLS)
-
-    reconciliation = reconcile_startup(
-        logger,
-        broker,
-        config.SYMBOLS,
-        max_positions_per_symbol=2,
-    )
-    execution.set_safe_mode(not reconciliation.ok, reconciliation.reason)
-
+    reconciliation=reconcile_startup(logger,broker,config.SYMBOLS,max_positions_per_symbol=2); execution.set_safe_mode(not reconciliation.ok,reconciliation.reason)
     provider.refresh(force=True)
-    logger.info(
-        "BULLET started | strategy=%s | dry_run=%s | stop_loss_enabled=%s | trading_state=%s",
-        strategy.name,
-        config.DRY_RUN,
-        config.ENABLE_STOP_LOSS,
-        "SAFE_MODE" if execution.safe_mode else "NORMAL",
-    )
+    logger.info("BULLET started | strategy=%s | dry_run=%s | stop_loss_enabled=%s | quality_scoring=%s | quality_gating=%s | trading_state=%s",strategy.name,config.DRY_RUN,config.ENABLE_STOP_LOSS,config.ENABLE_TRADE_QUALITY_SCORING,config.ENABLE_TRADE_QUALITY_GATING,"SAFE_MODE" if execution.safe_mode else "NORMAL")
     try:
-        while True:
-            run_scan(logger, broker, data, strategy, provider, execution)
-            time.sleep(config.SCAN_SECONDS)
-    except KeyboardInterrupt:
-        logger.info("CTRL+C received. Bot stopped by user.")
-    finally:
-        broker.shutdown()
+        while True: run_scan(logger,broker,data,strategy,provider,execution); time.sleep(config.SCAN_SECONDS)
+    except KeyboardInterrupt: logger.info("CTRL+C received. Bot stopped by user.")
+    finally: broker.shutdown()
 
-
-if __name__ == "__main__":
-    main()
+if __name__=="__main__": main()

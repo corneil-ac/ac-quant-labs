@@ -29,6 +29,29 @@ TRADE_JOURNAL_PATH = "data/trade_journal.csv"
 # ExecutionManager omits SL from the MT5 order while this flag is False.
 ENABLE_STOP_LOSS = False
 
+# AQL-0049: regime-aware entry gating. Keep the mapping explicit and configurable.
+ENABLE_REGIME_GATING = True
+REGIME_ENTRY_RULES = {
+    "STRONG_TREND": {
+        "EMA20_PULLBACK", "NEAR_EMA", "MOMENTUM_CONTINUATION",
+        "BREAKOUT_CONTINUATION", "STRONG_TREND_CONTINUATION",
+    },
+    "WEAK_TREND": {
+        "EMA20_PULLBACK", "NEAR_EMA", "MOMENTUM_CONTINUATION",
+    },
+    "RANGE": {
+        "EMA20_PULLBACK", "NEAR_EMA",
+    },
+    "HIGH_VOLATILITY": {
+        "EMA20_PULLBACK", "MOMENTUM_CONTINUATION",
+    },
+    "LOW_VOLATILITY": {
+        "EMA20_PULLBACK", "NEAR_EMA",
+    },
+    # UNSTABLE intentionally allows no entry modules while gating is enabled.
+    "UNSTABLE": set(),
+}
+
 # AQL-0044 multi-entry engine.  Thresholds are deliberately moderately
 # permissive for demo observation, while every module still sits behind the H1
 # trend and M15 directional alignment gates.

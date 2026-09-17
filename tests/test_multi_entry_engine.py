@@ -81,9 +81,11 @@ def _config(selected, enabled=True):
 @pytest.mark.parametrize("module", MODULES)
 @pytest.mark.parametrize("direction", ("BUY", "SELL"))
 def test_each_entry_module_selects_buy_and_sell(module, direction):
-    signal = TrendMomentumStrategy(multi_entry_config=_config(module)).evaluate(
-        "EURUSD", _market(direction)
-    )
+    # These legacy module-behavior tests isolate the module logic itself.
+    # Regime gating has dedicated coverage in test_regime_entry_gating.py.
+    signal = TrendMomentumStrategy(
+        multi_entry_config=_config(module), enable_regime_gating=False
+    ).evaluate("EURUSD", _market(direction))
     assert signal.action is SignalAction(direction)
     assert signal.entry_source == module
     assert signal.entry_reason
@@ -93,16 +95,17 @@ def test_each_entry_module_selects_buy_and_sell(module, direction):
 @pytest.mark.parametrize("module", MODULES)
 def test_each_module_has_a_non_qualifying_case(module):
     flat = {"H1": _candles(np.ones(220) * 100), "M15": _candles(np.ones(70) * 100)}
-    signal = TrendMomentumStrategy(multi_entry_config=_config(module)).evaluate(
-        "EURUSD", flat
-    )
+    signal = TrendMomentumStrategy(
+        multi_entry_config=_config(module), enable_regime_gating=False
+    ).evaluate("EURUSD", flat)
     assert signal.action is SignalAction.HOLD
     assert signal.entry_details["module_results"][module]["status"] == "FAIL"
 
 
 def test_disabled_module_cannot_trigger():
     signal = TrendMomentumStrategy(
-        multi_entry_config=_config("EMA20_PULLBACK", False)
+        multi_entry_config=_config("EMA20_PULLBACK", False),
+        enable_regime_gating=False,
     ).evaluate("EURUSD", _market("BUY"))
     assert signal.action is SignalAction.HOLD
     assert (
@@ -118,9 +121,9 @@ def test_priority_is_deterministic_and_only_one_signal_is_returned():
         "min_rsi": 0,
         "max_rsi": 100,
     }
-    signal = TrendMomentumStrategy(multi_entry_config=cfg).evaluate(
-        "EURUSD", _market("BUY")
-    )
+    signal = TrendMomentumStrategy(
+        multi_entry_config=cfg, enable_regime_gating=False
+    ).evaluate("EURUSD", _market("BUY"))
     assert signal.entry_source == "EMA20_PULLBACK"
     assert signal.entry_details["module_results"]["EMA20_PULLBACK"]["status"] == "PASS"
     assert signal.entry_details["module_results"]["NEAR_EMA"]["status"] == "PASS"
@@ -130,9 +133,9 @@ def test_priority_is_deterministic_and_only_one_signal_is_returned():
 def test_h1_disagreement_blocks_all_modules():
     data = _market("BUY")
     data["H1"] = _candles(np.linspace(200, 100, 220))
-    signal = TrendMomentumStrategy(multi_entry_config=_config("NEAR_EMA")).evaluate(
-        "EURUSD", data
-    )
+    signal = TrendMomentumStrategy(
+        multi_entry_config=_config("NEAR_EMA"), enable_regime_gating=False
+    ).evaluate("EURUSD", data)
     assert signal.action is SignalAction.HOLD
     assert "not aligned" in signal.reason
 
@@ -140,8 +143,8 @@ def test_h1_disagreement_blocks_all_modules():
 def test_m15_directional_disagreement_blocks_all_modules():
     data = _market("BUY")
     data["M15"] = _candles(np.linspace(200, 150, 70))
-    signal = TrendMomentumStrategy(multi_entry_config=_config("NEAR_EMA")).evaluate(
-        "EURUSD", data
-    )
+    signal = TrendMomentumStrategy(
+        multi_entry_config=_config("NEAR_EMA"), enable_regime_gating=False
+    ).evaluate("EURUSD", data)
     assert signal.action is SignalAction.HOLD
     assert "not aligned" in signal.reason

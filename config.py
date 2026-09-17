@@ -11,7 +11,9 @@ DATA_FETCH_RETRY_SECONDS = 2
 MT5_RECOVERY_WAIT_SECONDS = 1
 DATA_FEED_OUTAGE_THRESHOLD = len(SYMBOLS)
 
-ENABLE_MAX_HOLD = True
+# Temporary AQL-0047 observation mode: max-hold exits are paused alongside
+# broker-side stop losses so positions can be observed without BULLET's timed exit.
+ENABLE_MAX_HOLD = False
 MAX_HOLD_HOURS = 2.0
 MAX_OPEN_POSITIONS = 4
 COOLDOWN_MINUTES = 15

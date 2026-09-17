@@ -33,6 +33,8 @@ class StrategySignal:
     entry_details: Mapping[str, Any] | None = None
     market_regime: str | None = None
     regime_details: Mapping[str, Any] | None = None
+    quality_score: float | None = None
+    quality_details: Mapping[str, Any] | None = None
 
 
 class TradingStrategy(ABC):
